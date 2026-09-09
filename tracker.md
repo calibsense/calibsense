@@ -119,6 +119,9 @@ Filled in as tests land. A claim without a row here is not a claim.
 | Rodrigues is correct | vs `cv2.Rodrigues`, 60k rotations incl. the π singularity | **4e-8 worst round-trip** |
 | Detectors find real patterns | rendered images, 3 targets × 2 camera models | **0.09–0.4 px mean localisation** |
 | The frozen binary works | `dist/caltrust` in a stripped environment | **full pipeline, fx 899.564 ± 0.751** |
+| The assumed noise *shape* mostly does not matter | Monte Carlo injecting anisotropy, per-view heteroscedasticity, heavy tails | **sd ratio stays 0.96–1.17 for all three** |
+| Correlated corner noise breaks the covariance | Monte Carlo, 200 px correlated field | **sd ratio 0.12–0.39, and σ̂ *falls* 0.25 → 0.055 px** |
+| The view-clustered covariance recovers it | same rig, sandwich vs classical | **0.12 → 0.75 of true spread at 14 views, 0.13 → 0.84 at 30** |
 
 ### The correction this milestone forced
 
@@ -304,3 +307,74 @@ interval. On the frontoparallel rig it turns "unbounded" into +/-0.98 mm.
 It does not predict correctness. The synthetic views agree with the current fit
 by construction, so the forecast says how much *tighter* the interval would get,
 not that the answer would be right. Every forecast carries that sentence.
+
+---
+
+## After M7 — the noise model, measured
+
+Open item 1 said every interval caltrust reports was conditional on a noise
+model nobody had checked, and that the Monte Carlo test validating the
+covariance was circular on exactly that point: it injects noise through
+`synthesise(noise_px=...)`, which is i.i.d. isotropic Gaussian, which is what
+the covariance assumes.
+
+Both halves were right. Measuring it changed which half matters.
+
+Injecting one violation at a time, comparing predicted intrinsic deviation
+against the empirical spread of 250–300 refits:
+
+| violation | predicted / empirical | 95% interval covers |
+|---|---|---|
+| i.i.d. isotropic (the assumption) | 1.01–1.08 | 94–97% |
+| anisotropic, 3:1 along the edge | 0.98–1.13 | 94–97% |
+| heteroscedastic across views | 1.04–1.17 | 95–97% |
+| heavy tails, 5% of corners 5× worse | 0.97–1.04 | 93–96% |
+| **correlated field, 60 px length** | **0.32–0.51** | **47%** |
+| **correlated field, 200 px length** | **0.12–0.39** | **15%** |
+
+**The three violations item 1 named are all harmless, and the one that matters
+was not named.** Hundreds of corners at varied orientations average anisotropy
+away, and `cost / dof` absorbs whatever average power heteroscedasticity leaves.
+The mechanism item 1 blamed for correlation was wrong too — `cornerSubPix` uses
+an 11–21 px window and corners sit 60 px apart or more, so the windows never
+overlap.
+
+Spatial correlation across the frame is what breaks it, and it breaks it by a
+factor of eight. Worse, it breaks it *silently and in the flattering direction*:
+a correlated field is partly absorbable by the pose and distortion parameters,
+so it lowers the residual while raising the estimator's real spread. At a 200 px
+correlation length σ̂ fell 0.25 → 0.055 px while sd(fx) rose 3.0 → 5.2 px. A
+beautiful RMS on an interval 7.7× too tight, which is the exact failure this
+tool exists to catch.
+
+**The fix item 1 proposed would not have worked.** Per-point weights buy
+efficiency, not honest intervals: under correlated noise the error lives in the
+off-diagonal of the noise covariance, and reweighting a diagonal cannot repair a
+correlation. So item 1 was never blocked by items 5 and 6, which is two
+milestones of dependency that turned out not to exist.
+
+What went in instead reuses M4's argument rather than M6's machinery. M4 already
+established that the *view* is the independent unit for the radial residual
+profile, because corners in one view share that view's pose. The same clustering
+applied to the parameters gives
+
+    Cov = S⁻¹ (Σᵢ sᵢsᵢᵀ) S⁻¹ · G/(G−1),   sᵢ = Aᵢᵀrᵢ − Yᵢᵀ(Bᵢᵀrᵢ)
+
+which assumes only that different views are independent, and every block it
+needs was already stored — `Yᵢ` for the cross-covariance, `Bᵢᵀrᵢ` as
+`gradient_pose`, and `Σᵢ sᵢ` as the reduced gradient `newton_decrement` forms.
+The only addition was the per-view intrinsic gradient, kept for the same reason
+`u_view` is.
+
+The ratio between the two estimates is the `noise_model` finding, so the
+assumption is now checked against the user's own capture instead of asserted.
+Near one and the classical interval is defensible by measurement; 6.5× and the
+report says which parameter and by how much.
+
+Three limits stated rather than hidden: the sandwich is mildly optimistic at low
+view counts (residual shrinkage at a fitted optimum, only partly undone by
+`G/(G−1)`), it covers the intrinsics only (one cluster per pose means no
+between-cluster scatter), and it is blind to error identical across every view,
+which is open item 2. The inflation is reported but not yet propagated into the
+task-space millimetres — open item 1b, left open because the honest scaling is
+not derivable without inventing a number.

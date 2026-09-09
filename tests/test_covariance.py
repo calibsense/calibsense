@@ -517,3 +517,20 @@ def test_equations_without_per_view_scores_have_no_robust_covariance(good_captur
     assert np.isnan(covariance.worst_robust_inflation())
     with pytest.raises(RefitError, match="per-view scores"):
         stripped.view_scores()
+
+
+def test_a_single_view_has_no_between_view_scatter(pinhole, checkerboard):
+    """One cluster cannot have a spread, so there is no robust estimate."""
+    from caltrust.core.observations import ObservationSet, ViewObservations
+
+    projector = projector_for(pinhole)
+    pose = diverse_poses(checkerboard, 1, seed=1)[0]
+    ids = np.arange(checkerboard.num_points)
+    points = projector.project(pinhole, pose, checkerboard.object_points(ids))
+    observations = ObservationSet(
+        checkerboard, (1280, 720), (ViewObservations("only", ids, points),)
+    )
+    equations, _ = assemble(pinhole, [pose], observations, pinhole.free_parameters())
+    assert equations.degrees_of_freedom > 0
+    assert equations.view_scores().shape == (1, equations.n_intrinsic)
+    assert covariance_from_normal_equations(equations).robust is None

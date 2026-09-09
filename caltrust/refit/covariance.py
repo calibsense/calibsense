@@ -180,10 +180,6 @@ class RobustCovariance:
         """Standard deviation of each free intrinsic under this estimate."""
         return np.sqrt(np.clip(np.diag(self.covariance), 0.0, None))
 
-    def correlation(self) -> np.ndarray:
-        """Correlation matrix of the free intrinsics under this estimate."""
-        return correlation_from_covariance(self.covariance)
-
 
 @dataclass(frozen=True)
 class CalibrationCovariance:
@@ -268,9 +264,9 @@ class CalibrationCovariance:
         if self.robust is None:
             return np.zeros(0)
         classical = self.intrinsic_std()
-        return np.where(classical > 0, self.robust.std() / np.where(
-            classical > 0, classical, 1.0
-        ), np.nan)
+        determined = classical > 0
+        safe = np.where(determined, classical, 1.0)
+        return np.where(determined, self.robust.std() / safe, np.nan)
 
     def worst_robust_inflation(self) -> float:
         """The largest inflation across the free intrinsics.

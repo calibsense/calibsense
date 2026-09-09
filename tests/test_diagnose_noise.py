@@ -78,6 +78,19 @@ def test_one_noisy_view_is_left_to_the_outlier_diagnostic():
     assert finding.metrics["worst_inflation"] < INFLATION_WARNING
 
 
+def test_short_range_correlation_is_a_warning_not_a_critical():
+    """Correlation at the sub-pixel window scale is real but mild.
+
+    A 20 px correlation length is about the size of the `cornerSubPix` window,
+    which is the one place neighbouring corners genuinely could share image
+    gradients. It costs a factor under two rather than a factor of six, so it
+    warns instead of condemning.
+    """
+    finding = NoiseModelValidity().run(rigs.with_correlated_noise(length_px=20.0))
+    assert finding.severity is Severity.WARNING
+    assert INFLATION_WARNING < finding.metrics["worst_inflation"] <= INFLATION_CRITICAL
+
+
 def test_an_unidentifiable_capture_defers_to_the_identifiability_finding():
     """Both estimates drop the same null space, so their agreement means nothing."""
     finding = NoiseModelValidity().run(rigs.frontoparallel())
