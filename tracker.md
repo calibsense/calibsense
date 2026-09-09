@@ -14,11 +14,11 @@ Everything in this repo exists to make that paragraph true and checkable.
 
 | # | Failure | Milestone that fixes it |
 |---|---|---|
-| 1 | Reprojection RMS is an in-sample fit statistic | M3 — held-out reprojection error |
+| 1 | Reprojection RMS is an in-sample fit statistic | **M3 — held-out reprojection error** |
 | 2 | No usable uncertainty on the parameters | **M2 — full covariance, not marginal stddevs** |
-| 3 | No diagnosis of the cause | M3 — the eight-cause diagnostic set |
-| 4 | No translation into task space | M4 — mm at a working distance |
-| 5 | No staleness detection | M6 — drift monitor |
+| 3 | No diagnosis of the cause | **M4 — the named-cause diagnostic set** |
+| 4 | No translation into task space | M5 — mm at a working distance |
+| 5 | No staleness detection | M7 — drift monitor |
 
 ---
 
@@ -28,15 +28,19 @@ Everything in this repo exists to make that paragraph true and checkable.
 |---|---|---|
 | **M1** | **Ingest** — images + target (checkerboard / ChArUco / circle grid), or existing calibration + detections. Pinhole/Brown-Conrady and fisheye/Kannala-Brandt. Optional robot poses for hand-eye. | in progress |
 | **M2** | **Refit with instrumentation** — full parameter covariance, per-view residual distributions, per-corner residuals, condition number of the normal equations, parameter correlation matrix. | in progress |
-| M3 | Out-of-sample error + the cause diagnostics | not started |
-| M4 | Task-space translation (mm at working distance) | not started |
-| M5 | Report generation, one command | not started |
-| M6 | Staleness / drift detection | not started |
+| **M3** | **Out-of-sample error** — K-fold over views, in-sample and held-out RMS and the ratio between them. | **done** |
+| **M4** | **Degeneracy and coverage diagnostics** — one named cause each for pose diversity, depth variation, frontoparallel dominance, image coverage, target scale, distortion model adequacy and per-view leverage. | **done** |
+| M5 | Task-space translation (mm at working distance) | not started |
+| M6 | Report generation, one command | not started |
+| M7 | Staleness / drift detection | not started |
 
-Current goal was **M1 + M2 only**, built so M3–M6 drop in without rework.
-Both are complete: 651 tests at 98% statement coverage, and the package runs
-both as a pip install (three transitive dependencies) and as a 63 MB
-PyInstaller binary with no Python present.
+M1 through M4 are complete: 772 tests at 98% statement coverage, running both as
+a pip install (three transitive dependencies) and as a PyInstaller binary with
+no Python present.
+
+Everything known to be wrong, missing, or resting on an unchecked assumption is
+in [open-items.md](open-items.md) — nineteen items, ranked by how much each one
+threatens the millimetre claim rather than by how hard it is to fix.
 
 ---
 
@@ -132,3 +136,79 @@ and **≈0 on the fully degenerate one**, because a cut direction carries no
 variance to correlate. M3 must therefore check identifiability first and reach
 for the correlation only when the system is non-singular. Recorded so M3
 diagnoses tilt before depth.
+
+
+---
+
+## M3 — Out-of-sample error · task list
+
+- [x] K-fold assignment over views, shuffled by default and reproducible from a seed
+- [x] Fold count chosen so every training set keeps enough views to fit
+- [x] Held-out evaluation with each view's pose solved by PnP at the fold's intrinsics, so nothing leaks
+- [x] Pooled out-of-sample RMS weighted by point count, not averaged over folds
+- [x] In-sample, out-of-sample and the ratio between them
+- [x] Per-fold identifiability, which gates the verdict
+- [x] Across-fold parameter spread, reported beside the covariance's prediction
+- [x] `--cross-validate` on `caltrust refit`, persisted in the fit bundle
+
+### The blind spot this milestone found
+
+**The out-of-sample ratio cannot see the focal-length/depth degeneracy.** On the
+frontoparallel rig whose `fx` is wrong by over a thousand pixels, the ratio comes
+out at **1.005**. A held-out view solves its own pose, so a proportionally wrong
+depth cancels a proportionally wrong focal length and reprojection is perfect.
+
+The plan called the ratio "the most useful thing in the report". It is useful,
+and it is not sufficient: any degeneracy a free pose can absorb is invisible to
+it. Two things now sit beside it. Per-fold identifiability, which gates the
+verdict so the report never calls such a ratio honest. And the across-fold
+parameter spread, which is model-free — it resamples the actual views and assumes
+nothing about the noise — and which reads 1.15 px on the healthy rig against
+326 px on the degenerate one.
+
+That spread is also the only cross-check in the package that does not inherit the
+i.i.d. Gaussian noise assumption, which is
+[open item 1](open-items.md). It is not unbiased, because folds overlap, so it is
+reported as a relative indicator.
+
+## M4 — Diagnostics · task list
+
+- [x] Pose diversity — max pairwise angle between board normals, plus the orientation tensor for "are the normals confined to a plane"
+- [x] Depth variation — max-over-min working distance, with the focal-distance correlation from the covariance
+- [x] Frontoparallel dominance — fraction of views within 15 degrees of the image plane, linked to the undetermined parameters it causes
+- [x] Image coverage — grid occupancy, border-ring occupancy, and radial reach
+- [x] Target scale — median nearest-neighbour corner spacing, against the residual sigma
+- [x] Distortion model adequacy — omnibus and trend tests on the radial residual profile
+- [x] Outlier views — per-view leverage as its share of the intrinsic information, paired with residual
+- [x] Aggregation, severity ranking, `caltrust diagnose`, exit code 3 for a critical finding
+
+### Three things M4 had to get right that were not obvious
+
+**Leverage needed a definition.** "Per-view leverage on the objective" is only
+well posed once you pick a quantity. The Schur complement is a sum over views,
+`S = sum_i S_i`, so `trace(S_i S^-1)` sums to the parameter count and
+`trace(S_i S^-1) / p` is that view's share of everything the capture knows about
+the intrinsics. Shares sum to one and are directly readable. This needed the
+per-view `u_view` blocks added to `NormalEquations`.
+
+**The residual test had to cluster by view.** The obvious test — z-score each
+radial bin's mean against `sigma / sqrt(n)` — assumes corners are independent.
+They are not: corners in one view share that view's pose, so a small pose error
+moves all of them together. Pooling corners reported +6.3 sigma of "structure" on
+a capture whose focal length was recovered to 0.6 sigma. Treating the **view** as
+the independent unit — one mean per view per band, standard error from the
+scatter of those means — is cluster-robust, needs no noise assumption at all, and
+brings the same capture to a plausible reading.
+
+**A slope test alone misses truncation.** A truncated radial polynomial leaves a
+residual that oscillates in sign, and a linear trend walks straight past it. The
+primary criterion is now a chi-square over the bands (Wilson-Hilferty to a
+z-score, so no special-function dependency); the slope only describes the shape.
+Measured: correct models land between -0.6 and +0.4, a fisheye fitted as pinhole
+lands at +5.2.
+
+**And the advice had to stop quoting numbers the fit does not know.** The depth
+diagnostic originally recommended "capture at 1030 mm and 2578 mm" on a rig whose
+true distance was 800 mm — because the fitted depths scale with the wrong focal
+length. The *ratio* survives that rescale, so the finding stands; the absolute
+millimetres are now withheld whenever the fit is not identifiable.

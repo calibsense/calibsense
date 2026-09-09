@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -21,6 +21,9 @@ from ..errors import ValidationError
 from .covariance import CalibrationCovariance, WeakDirection
 from .normal import NormalEquations
 from .residuals import ResidualStatistics
+
+if TYPE_CHECKING:  # avoids a cycle: validate imports refit
+    from ..validate.result import CrossValidation
 
 #: Predicted relative cost reduction below which a parameter set counts as
 #: sitting at the optimum of its own objective.
@@ -204,6 +207,9 @@ class InstrumentedFit:
         refitted: Whether the parameters were re-estimated.
         options: The settings this fit was produced under.
         prior_rms: The RMS the session's existing calibration claimed, if any.
+        cross_validation: Out-of-sample results, when they were computed. Not
+            produced by `instrument`, which fits once; attach it with
+            `dataclasses.replace` after calling `caltrust.validate.cross_validate`.
         created: ISO-8601 UTC timestamp.
         caltrust_version: Version that produced the fit.
     """
@@ -219,6 +225,7 @@ class InstrumentedFit:
     refitted: bool
     options: RefitOptions
     prior_rms: Optional[float] = None
+    cross_validation: Optional["CrossValidation"] = None
     relative_decrement: float = 0.0
     initial_guess: Optional[str] = None
     created: str = ""
@@ -294,6 +301,13 @@ class InstrumentedFit:
                 f"NOT AT OPTIMUM  a Newton step would cut the cost by "
                 f"{self.relative_decrement:.2%}; these parameters are not the "
                 "best fit to these detections"
+            )
+        if self.cross_validation is not None:
+            validation = self.cross_validation
+            lines.append(
+                f"out-of-sample{validation.out_of_sample_rms:>9.4f} px over "
+                f"{validation.n_folds} folds, ratio {validation.ratio:.2f}x"
+                + ("" if validation.trustworthy else " (uninformative: see below)")
             )
         outliers = self.residuals.outlier_views()
         if outliers:

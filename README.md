@@ -5,9 +5,10 @@ the full parameter covariance, which parameter combinations your capture does
 not determine at all, where the residuals are structured rather than random, and
 how well posed the estimation problem actually was.
 
-Status: **M1 (ingest) and M2 (refit with instrumentation) are complete.** M3 to
-M6 — out-of-sample error, cause diagnosis, task-space millimetres, and staleness
-detection — are not built yet. See [tracker.md](tracker.md).
+Status: **M1 to M4 complete** — ingest, instrumented refit, out-of-sample error,
+and named-cause diagnostics. Task-space millimetres and staleness detection are
+not built yet. See [tracker.md](tracker.md) for the plan and
+[open-items.md](open-items.md) for everything known to be wrong or unverified.
 
 ---
 
@@ -117,6 +118,29 @@ optimum of its own detections:
     NOT AT OPTIMUM  a Newton step would cut the cost by 34.03%
     outlier views 4: view015 (0.51 px), view006 (0.50 px), view012 (0.44 px)
 
+Then ask what is wrong with the capture:
+
+    caltrust diagnose session.npz
+
+    caltrust diagnosis
+    ==================
+
+      1 critical finding(s) — image coverage — each described below with what it invalidates
+
+      [CRITICAL] Image coverage
+                   corners occupy 33% of an 8x6 grid, 8% of the border ring, and reach
+                   41% of the way to the frame corner; the distortion coefficients are
+                   extrapolating over most of the frame
+                   -> Move the board into the corners and edges of the image, not just
+                      the middle. Distortion grows with radius, so the coefficients are
+                      only measured over the radii you actually visit.
+
+      clean: Out-of-sample error, Pose diversity, Frontoparallel dominance,
+             Depth variation, Target scale, Outlier and high-leverage views
+
+`diagnose` refits, cross-validates and runs every check. It exits 3 on a critical
+finding, so a CI step can gate on calibration quality without parsing the report.
+
 `caltrust show`, `caltrust formats` and `--help` cover the rest.
 
 ---
@@ -172,6 +196,78 @@ Everything `cv2.calibrateCamera` computes internally and then discards:
 
 ---
 
+## What M3 measures
+
+K-fold over views: fit on the rest, predict the held-out ones, report in-sample
+RMS, out-of-sample RMS and the ratio. Each held-out view solves its own pose by
+PnP at the fold's intrinsics, which is the deployment-relevant question and also
+what stops the view leaking into its own prediction.
+
+**The ratio has a blind spot, and finding it changed the design.** On the
+frontoparallel rig from the table above — the one whose `fx` is wrong by 3333 px
+— the ratio comes out at **1.005**. A held-out view solves its own pose, so a
+proportionally wrong depth cancels a proportionally wrong focal length and
+reprojection is perfect. Any degeneracy a free pose can absorb is invisible to
+reprojection-based cross-validation.
+
+So two things sit beside it. Per-fold identifiability gates the verdict, and the
+report never calls such a ratio honest. And the **across-fold parameter spread**
+is reported next to the covariance's prediction:
+
+| rig | out-of-sample ratio | fold spread of fx | covariance prediction |
+|---|---|---|---|
+| diverse | 1.01x | 1.15 px | 1.80 px |
+| frontoparallel | 1.00x | **326 px** | 636 px |
+
+That spread is the only cross-check in the package that assumes nothing about
+the noise — it resamples the actual views. It is not unbiased, because folds
+share most of their training data, so it is labelled a relative indicator.
+
+## What M4 diagnoses
+
+One named cause per check, each with the numbers behind it and what to do:
+
+| Cause | Measured as |
+|---|---|
+| Pose diversity | max pairwise angle between board normals, plus the orientation tensor for whether the normals are confined to a plane |
+| Depth variation | max-over-min working distance, with the focal-distance correlation from the covariance |
+| Frontoparallel dominance | fraction of views within 15 degrees of the image plane, linked to the parameters it leaves undetermined |
+| Image coverage | grid occupancy, border-ring occupancy, and radial reach |
+| Target scale | median nearest-neighbour corner spacing, against the residual sigma |
+| Distortion model adequacy | chi-square and trend tests on the radial residual profile |
+| Outlier views | each view's share of the intrinsic information, paired with its residual |
+| Out-of-sample error | M3's ratio, gated on per-fold identifiability |
+
+Three of these needed a real decision rather than a formula.
+
+**Leverage needed a definition.** The Schur complement is a sum over views,
+`S = sum_i S_i`, so `trace(S_i S^-1)` sums to the parameter count and
+`trace(S_i S^-1) / p` is that view's share of everything the capture knows about
+the intrinsics. Shares sum to one and read directly as percentages. A view that
+combines a large share with a large residual is the dangerous case, because the
+fit is being pulled by the frame it depends on most.
+
+**The residual test had to cluster by view.** Z-scoring each radial bin against
+`sigma / sqrt(n)` assumes corners are independent, and they are not — corners in
+one view share that view's pose, so a small pose error moves all of them
+together. That naive version reported +6.3 sigma of "structure" on a capture
+whose focal length was recovered to 0.6 sigma. Treating the *view* as the
+independent unit is cluster-robust and needs no noise assumption:
+
+| case | reprojection RMS | flatness z | verdict |
+|---|---|---|---|
+| pinhole data, pinhole model | 0.2768 px | −0.16 | ok |
+| pinhole data, k3 dropped | 0.2770 px | +0.44 | ok |
+| fisheye data, fisheye model | 0.2767 px | −0.61 | ok |
+| fisheye data, pinhole model | 0.2832 px | **+5.22** | critical |
+
+The RMS moves by 2%. The residual structure is unmistakable.
+
+**A slope test alone misses truncation.** A truncated radial polynomial leaves a
+residual that oscillates in sign, so the primary criterion is a chi-square over
+the bands (Wilson-Hilferty to a z-score, no special-function dependency) and the
+slope only describes the shape.
+
 ## Verification
 
 Every numeric claim has a test that could fail.
@@ -187,10 +283,15 @@ Every numeric claim has a test that could fail.
 | Rodrigues conversion is right | vs `cv2.Rodrigues`, 60k rotations including the pi singularity | 4e-8 worst round-trip |
 | Detectors find real patterns | rendered images, all three targets, both camera models | 0.09-0.4 px mean localisation error |
 | The frozen binary works | `dist/caltrust` in a stripped environment | full pipeline, `fx = 899.564 +/- 0.751` |
+| Cross-validation folds are sound | partition, point-weighted pooling, no train/test overlap | exact |
+| The ratio's blind spot is pinned | frontoparallel rig, asserted to stay under 1.1x | 1.005x, test would fail if it silently started working |
+| Fold spread catches what the ratio misses | same two rigs | 280x apart |
+| Each diagnostic is specific | six single-fault rigs x each cause | every fault fires, every unrelated cause stays quiet |
+| Clustering by view deflates the z-score | naive per-corner vs cluster-robust on a healthy rig | asserted lower, measured 6.3 -> 1.6 |
+| The omnibus test catches oscillation | synthetic profile orthogonal to constant and linear | slope t = 0, flatness z > 5 |
 
-    651 passed, 10 skipped in 84s        # make test
-    571 passed, 80 deselected in 3s      # make fast
-    TOTAL  2940 statements, 63 missed, 98%
+    772 passed, 10 skipped in 80s        # make test
+    TOTAL  3722 statements, 90 missed, 98%
 
 The ten skips are OpenCV-4-only flag-namespace checks. `make test` runs
 everything; `make fast` skips the Monte Carlo and image-rendering tests.
@@ -199,22 +300,28 @@ everything; `make fast` skips the Monte Carlo and image-rendering tests.
 
 ## Using it as a library
 
-    from caltrust import instrument, session_from_images
+    from caltrust import cross_validate, diagnose, instrument, session_from_images
     from caltrust.cli.targets import resolve_target
 
     session = session_from_images("captures/", resolve_target("checkerboard:9x6:25mm"))
     fit = instrument(session)
+    validation = cross_validate(session)
+    findings = diagnose(fit, session.observations, validation)
 
-    print("\n".join(fit.summary_lines()))
-    print(fit.conditioning.identifiable)
+    print(fit.conditioning.identifiable)                       # read this first
+    print(validation.ratio, validation.spread_of("fx"))
+    print(findings.verdict())
+    for finding in findings.critical:
+        print(finding.cause, finding.summary, finding.metrics)
+
     print(fit.covariance.correlation_with_poses("fx")[:, 5])   # corr(fx, tz) per view
     print(fit.covariance.dense())                              # if you want it all
 
 `caltrust.synthetic` generates captures with known truth, which is how the tests
 work and how M3's "what if you added six views at 400 mm" will be answered.
 
-API reference: `make docs` runs `pdoc` over the docstrings and writes 46 pages to
-`docs/api`. There is no hand-written duplicate of anything a docstring says.
+API reference: `make docs` runs `pdoc` over the docstrings and writes a page per
+module to `docs/api`. There is no hand-written duplicate of anything a docstring says.
 
 ---
 

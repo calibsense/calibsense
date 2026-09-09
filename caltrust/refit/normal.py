@@ -33,6 +33,10 @@ class NormalEquations:
 
     Attributes:
         u: Intrinsic-intrinsic block, shape `(p, p)` over free parameters.
+        u_view: Each view's own contribution to `u`, shape `(v, p, p)`, so that
+            `u == u_view.sum(axis=0)`. Kept because a view's share of the
+            intrinsic information is only recoverable from the per-view term,
+            and that share is what "leverage" means for a calibration.
         w: Intrinsic-pose cross blocks, shape `(v, p, 6)`.
         v: Pose-pose blocks, shape `(v, 6, 6)`.
         gradient_intrinsic: `J_intrinsic.T @ residual`, shape `(p,)`.
@@ -43,6 +47,7 @@ class NormalEquations:
     """
 
     u: np.ndarray
+    u_view: np.ndarray
     w: np.ndarray
     v: np.ndarray
     gradient_intrinsic: np.ndarray
@@ -129,6 +134,26 @@ class NormalEquations:
         s = self.u - np.einsum("nik,nkj->ij", self.w, y)
         return s, v_inverse, y, singular
 
+    def schur_contributions(self, rcond: float = DEFAULT_RCOND) -> np.ndarray:
+        """Each view's contribution to the intrinsic information.
+
+        The Schur complement is a sum over views, `S = sum_i S_i` with
+        `S_i = U_i - W_i V_i^-1 W_i.T`. Splitting it that way is what makes a
+        per-view leverage well defined: `trace(S_i S^-1)` sums to `p` across
+        views, so `trace(S_i S^-1) / p` is that view's share of everything the
+        capture knows about the intrinsics.
+
+        Args:
+            rcond: Relative eigenvalue cut used when inverting each pose block.
+
+        Returns:
+            An `(v, p, p)` array whose sum over the first axis is the Schur
+            complement.
+        """
+        v_inverse, _ = block_inverse_stack(self.v, rcond)
+        y = np.einsum("nij,nkj->nik", v_inverse, self.w)
+        return self.u_view - np.einsum("nik,nkj->nij", self.w, y)
+
 
 def assemble(
     camera: CameraModel,
@@ -173,7 +198,7 @@ def assemble(
     if n_free == 0:
         raise ValidationError("no intrinsic parameter is free; nothing to estimate")
 
-    u = np.zeros((n_free, n_free))
+    u_view = np.zeros((observations.n_views, n_free, n_free))
     w = np.zeros((observations.n_views, n_free, POSE_DIMENSION))
     v = np.zeros((observations.n_views, POSE_DIMENSION, POSE_DIMENSION))
     gradient_intrinsic = np.zeros(n_free)
@@ -200,7 +225,7 @@ def assemble(
             d_intrinsic = d_intrinsic * scale[:, None]
             d_pose = d_pose * scale[:, None]
             flat = flat * scale
-        u += d_intrinsic.T @ d_intrinsic
+        u_view[index] = d_intrinsic.T @ d_intrinsic
         w[index] = d_intrinsic.T @ d_pose
         v[index] = d_pose.T @ d_pose
         gradient_intrinsic += d_intrinsic.T @ flat
@@ -209,7 +234,8 @@ def assemble(
         n_residuals += flat.size
 
     equations = NormalEquations(
-        u=u,
+        u=u_view.sum(axis=0),
+        u_view=u_view,
         w=w,
         v=v,
         gradient_intrinsic=gradient_intrinsic,

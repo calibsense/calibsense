@@ -4,12 +4,14 @@ Built on `argparse` rather than a third-party framework, and with a static
 subcommand table, so that a PyInstaller build resolves every command without
 dynamic discovery and the binary carries no dependency it does not need.
 
-Exit codes: 0 success, 2 a problem with the input, 1 an unexpected failure.
+Exit codes: 0 success, 2 a problem with the input, 1 an unexpected failure, and
+3 from `diagnose` when the calibration itself has a critical problem.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from typing import List, Optional, Sequence
@@ -25,14 +27,19 @@ from ..ingest import (
     session_from_calibration,
     session_from_images,
 )
+from ..diagnose import diagnose
 from ..io import load_fit, load_session, save_fit, save_session
 from ..refit import RefitOptions, instrument
+from ..validate import cross_validate
 from . import render
 from .targets import SHORTHAND_HELP, resolve_target
 
 EXIT_OK = 0
 EXIT_UNEXPECTED = 1
 EXIT_INPUT = 2
+#: `caltrust diagnose` returns this when it finds a critical problem, so a CI
+#: step can gate on calibration quality without parsing the report.
+EXIT_FINDINGS = 3
 
 
 def _progress(index: int, total: int, view_id: str, error: Optional[str]) -> None:
@@ -72,6 +79,33 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser, required: bool) 
         "--calibration-format",
         choices=[name for name, _ in reader_names()],
         help="force a reader instead of detecting the format",
+    )
+
+
+def _add_cross_validation_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("out-of-sample error")
+    group.add_argument(
+        "--cross-validate",
+        action="store_true",
+        help="measure held-out reprojection error by K-fold over views",
+    )
+    group.add_argument(
+        "--folds",
+        type=int,
+        metavar="N",
+        help="number of folds (default: 5, reduced if there are too few views)",
+    )
+    group.add_argument(
+        "--no-shuffle",
+        action="store_true",
+        help="split views in capture order instead of shuffling first",
+    )
+    group.add_argument(
+        "--fold-seed",
+        type=int,
+        default=0,
+        metavar="N",
+        help="seed for the fold shuffle (default: %(default)s)",
     )
 
 
@@ -143,10 +177,36 @@ def build_parser() -> argparse.ArgumentParser:
                        help="make OpenCV reject ill-conditioned fisheye views")
     refit.add_argument("--rcond", type=float, default=1e-12, metavar="X",
                        help="relative eigenvalue cut (default: %(default)s)")
+    _add_cross_validation_arguments(refit)
     refit.add_argument("-v", "--verbose", action="store_true",
                        help="every view and the full correlation matrix")
     refit.add_argument("--json", action="store_true", help="emit JSON instead of text")
     refit.set_defaults(handler=_refit)
+
+    diagnose_parser = subparsers.add_parser(
+        "diagnose",
+        help="refit, cross-validate and name every degeneracy and coverage problem",
+    )
+    diagnose_parser.add_argument("session", metavar="SESSION", help="session bundle")
+    diagnose_parser.add_argument("-o", "--output", metavar="FILE",
+                                 help="fit bundle to write")
+    diagnose_parser.add_argument("--model", choices=("pinhole", "fisheye"),
+                                 help="camera model (default: from the session)")
+    diagnose_parser.add_argument("--distortion-terms", type=int, default=5,
+                                 choices=(4, 5, 8, 12, 14),
+                                 help="Brown-Conrady coefficients (default: %(default)s)")
+    diagnose_parser.add_argument("--fix", action="append", default=[], metavar="PARAM",
+                                 help="hold a parameter fixed; repeatable")
+    diagnose_parser.add_argument("--tie-aspect", action="store_true",
+                                 help="hold fy/fx constant")
+    diagnose_parser.add_argument("--all", action="store_true",
+                                 help="list the diagnostics that found nothing too")
+    diagnose_parser.add_argument("--json", action="store_true",
+                                 help="emit JSON instead of text")
+    diagnose_parser.add_argument("-v", "--verbose", action="store_true",
+                                 help="print the full refit report as well")
+    _add_cross_validation_arguments(diagnose_parser)
+    diagnose_parser.set_defaults(handler=_diagnose)
 
     show = subparsers.add_parser("show", help="print a session or a fit bundle")
     show.add_argument("path", metavar="FILE", help="session or fit bundle")
@@ -213,7 +273,7 @@ def _refit(args: argparse.Namespace) -> int:
         radial_bins=args.radial_bins,
         check_condition=args.check_condition,
     )
-    fit = instrument(session, options)
+    fit = _fit_with_validation(session, options, args)
     if args.json:
         print(json.dumps(render.fit_to_json(fit), indent=2))
     else:
@@ -222,6 +282,54 @@ def _refit(args: argparse.Namespace) -> int:
         path = save_fit(fit, args.output)
         print(f"\nwrote {path}", file=sys.stderr if args.json else sys.stdout)
     return EXIT_OK
+
+
+def _fit_with_validation(session, options: RefitOptions, args) -> "InstrumentedFit":
+    """Instrument a session, attaching cross-validation when it was requested."""
+    fit = instrument(session, options)
+    if not getattr(args, "cross_validate", False) and getattr(args, "folds", None) is None:
+        return fit
+    validation = cross_validate(
+        session,
+        options,
+        folds=args.folds,
+        shuffle=not args.no_shuffle,
+        seed=args.fold_seed,
+    )
+    return dataclasses.replace(fit, cross_validation=validation)
+
+
+def _diagnose(args: argparse.Namespace) -> int:
+    session = load_session(args.session)
+    options = RefitOptions(
+        model=args.model,
+        distortion_terms=args.distortion_terms,
+        fixed=tuple(args.fix),
+        tie_aspect=args.tie_aspect,
+    )
+    # Cross-validation is the point of the command, so it is on unless the fold
+    # count makes it impossible.
+    args.cross_validate = True
+    try:
+        fit = _fit_with_validation(session, options, args)
+    except CalTrustError as exc:
+        print(f"caltrust: out-of-sample error not measured: {exc}", file=sys.stderr)
+        fit = instrument(session, options)
+    diagnosis = diagnose(fit, session.observations, fit.cross_validation)
+    if args.json:
+        print(json.dumps({
+            "fit": render.fit_to_json(fit),
+            "diagnosis": render.diagnosis_to_json(diagnosis),
+        }, indent=2))
+    else:
+        if args.verbose:
+            print(render.render_fit(fit, verbose=True), end="")
+            print()
+        print(render.render_diagnosis(diagnosis, include_ok=args.all), end="")
+    if args.output:
+        path = save_fit(fit, args.output)
+        print(f"\nwrote {path}", file=sys.stderr if args.json else sys.stdout)
+    return EXIT_OK if diagnosis.severity.name != "CRITICAL" else EXIT_FINDINGS
 
 
 def _show(args: argparse.Namespace) -> int:

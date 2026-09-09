@@ -27,6 +27,15 @@ Kannala-Brandt, optionally with robot poses for hand-eye.
 standard call discards kept — full parameter covariance, per-view residual
 distributions, per-corner residuals, the condition number of the normal
 equations, and the parameter correlation matrix.
+
+`caltrust.validate` covers M3: K-fold cross-validation over views, which turns
+the in-sample reprojection RMS into an honest out-of-sample number and a ratio
+between them.
+
+`caltrust.diagnose` covers M4: one diagnostic per cause — pose diversity, depth
+variation, frontoparallel dominance, image coverage, target scale, distortion
+model adequacy and per-view leverage — each returning a finding that names the
+cause and says what to do about it.
 """
 
 from __future__ import annotations
@@ -67,6 +76,12 @@ from .ingest import (
     session_from_images,
 )
 from .io import load_fit, load_session, save_fit, save_session
+from .diagnose import (
+    Diagnosis,
+    Finding,
+    Severity,
+    diagnose,
+)
 from .refit import (
     CalibrationCovariance,
     Conditioning,
@@ -74,6 +89,7 @@ from .refit import (
     RefitOptions,
     instrument,
 )
+from .validate import CrossValidation, Fold, HeldOutView, cross_validate
 
 __all__ = [
     "CalTrustError",
@@ -85,10 +101,15 @@ __all__ = [
     "Checkerboard",
     "CircleGrid",
     "Conditioning",
+    "CrossValidation",
     "DegenerateSystemError",
+    "Diagnosis",
     "DetectionError",
     "DetectorOptions",
+    "Finding",
     "FisheyeKannalaBrandt",
+    "Fold",
+    "HeldOutView",
     "IngestError",
     "InstrumentedFit",
     "ObservationSet",
@@ -98,12 +119,15 @@ __all__ = [
     "RefitOptions",
     "RobotPoses",
     "SerializationError",
+    "Severity",
     "TargetSpec",
     "UnsupportedFormatError",
     "ValidationError",
     "ViewObservations",
     "__version__",
     "camera_from_dict",
+    "cross_validate",
+    "diagnose",
     "instrument",
     "load_fit",
     "load_session",

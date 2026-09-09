@@ -9,7 +9,13 @@ import cv2
 import numpy as np
 import pytest
 
-from caltrust.cli.main import EXIT_INPUT, EXIT_OK, build_parser, main
+from caltrust.cli.main import (
+    EXIT_FINDINGS,
+    EXIT_INPUT,
+    EXIT_OK,
+    build_parser,
+    main,
+)
 from caltrust.core.target import Checkerboard
 from caltrust.io import load_fit, load_session
 from caltrust.synthetic import diverse_poses
@@ -261,3 +267,94 @@ def test_every_subcommand_has_a_handler():
 def test_parser_rejects_an_unknown_distortion_term_count():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["refit", "s.npz", "--distortion-terms", "7"])
+
+
+@pytest.mark.slow
+def test_refit_can_cross_validate(session_file, capsys):
+    assert main(["refit", str(session_file), "--cross-validate", "--json"]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    validation = payload["cross_validation"]
+    assert validation is not None
+    assert validation["n_folds"] >= 2
+    assert validation["out_of_sample_rms"] > 0
+    assert len(validation["folds"]) == validation["n_folds"]
+
+
+@pytest.mark.slow
+def test_refit_cross_validation_appears_in_the_text_report(session_file, capsys):
+    assert main(["refit", str(session_file), "--cross-validate"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "out-of-sample error" in out
+    assert "parameter spread across folds" in out
+
+
+@pytest.mark.slow
+def test_an_explicit_fold_count_implies_cross_validation(session_file, capsys):
+    assert main(["refit", str(session_file), "--folds", "3", "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["cross_validation"]["n_folds"] == 3
+
+
+@pytest.mark.slow
+def test_cross_validation_survives_a_save_and_load(tmp_path, session_file, capsys):
+    path = tmp_path / "fit.npz"
+    main(["refit", str(session_file), "--cross-validate", "-o", str(path)])
+    capsys.readouterr()
+    fit = load_fit(str(path))
+    assert fit.cross_validation is not None
+    assert fit.cross_validation.n_folds >= 2
+
+
+@pytest.mark.slow
+def test_diagnose_prints_findings(session_file, capsys):
+    code = main(["diagnose", str(session_file)])
+    out = capsys.readouterr().out
+    assert "caltrust diagnosis" in out
+    assert "Image coverage" in out or "clean:" in out
+    assert code in (EXIT_OK, EXIT_FINDINGS)
+
+
+@pytest.mark.slow
+def test_diagnose_exit_code_tracks_the_worst_finding(session_file, capsys):
+    """So a CI step can gate on calibration quality without parsing the text."""
+    code = main(["diagnose", str(session_file), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    critical = payload["diagnosis"]["severity"] == "CRITICAL"
+    assert code == (EXIT_FINDINGS if critical else EXIT_OK)
+
+
+@pytest.mark.slow
+def test_diagnose_json_carries_both_the_fit_and_the_findings(session_file, capsys):
+    main(["diagnose", str(session_file), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert "fit" in payload and "diagnosis" in payload
+    causes = {f["cause"] for f in payload["diagnosis"]["findings"]}
+    assert {"pose_diversity", "depth_variation", "image_coverage"} <= causes
+    assert payload["fit"]["cross_validation"] is not None
+
+
+@pytest.mark.slow
+def test_diagnose_all_lists_the_clean_diagnostics_too(session_file, capsys):
+    main(["diagnose", str(session_file), "--all"])
+    out = capsys.readouterr().out
+    assert "Pose diversity" in out
+    assert "[OK" in out
+
+
+@pytest.mark.slow
+def test_diagnose_verbose_includes_the_refit_report(session_file, capsys):
+    main(["diagnose", str(session_file), "-v"])
+    out = capsys.readouterr().out
+    assert "instrumented refit" in out and "caltrust diagnosis" in out
+
+
+@pytest.mark.slow
+def test_diagnose_writes_a_fit_bundle(tmp_path, session_file, capsys):
+    path = tmp_path / "diagnosed.npz"
+    main(["diagnose", str(session_file), "-o", str(path)])
+    capsys.readouterr()
+    assert load_fit(str(path)).cross_validation is not None
+
+
+def test_diagnose_on_a_missing_session_is_a_clean_input_error(tmp_path, capsys):
+    assert main(["diagnose", str(tmp_path / "absent.npz")]) == EXIT_INPUT
+    assert "no such file" in capsys.readouterr().err

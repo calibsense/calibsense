@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 
 from ..core.session import CalibrationSession
+from ..diagnose.report import Diagnosis
+from ..diagnose.views import view_influences
 from ..refit.result import InstrumentedFit
+from ..validate.result import CrossValidation
 
 
 def table(
@@ -189,6 +192,35 @@ def render_fit(fit: InstrumentedFit, verbose: bool = False) -> str:
         "distortion model that does not match the lens"
     )
 
+    validation = fit.cross_validation
+    if validation is not None:
+        lines += ["", "out-of-sample error"]
+        lines += [f"  {line}" for line in validation.summary_lines()]
+        lines += table(
+            ["fold", "train", "held out", "train rms", "held-out rms", "identifiable"],
+            [
+                [
+                    str(fold.index),
+                    str(len(fold.train_view_ids)),
+                    str(len(fold.held_out_view_ids)),
+                    f"{fold.train_rms:.4f}",
+                    f"{fold.held_out_rms:.4f}",
+                    str(fold.identifiable),
+                ]
+                for fold in validation.folds
+            ],
+        )
+        spread = [
+            [name, f"{fold:.4g}", "-" if not np.isfinite(predicted) else f"{predicted:.4g}"]
+            for name, fold, predicted in validation.spread_table()
+        ]
+        lines += ["", "parameter spread across folds, against the covariance"]
+        lines += table(["name", "fold spread", "predicted"], spread)
+        lines.append(
+            "  folds share most of their training views, so the fold spread is a "
+            "relative indicator rather than an unbiased sampling deviation"
+        )
+
     if verbose:
         matrix = covariance.intrinsic_correlation()
         names = covariance.intrinsic_names
@@ -199,6 +231,37 @@ def render_fit(fit: InstrumentedFit, verbose: bool = False) -> str:
              for i in range(len(names))],
         )
     return "\n".join(lines) + "\n"
+
+
+def render_diagnosis(diagnosis: Diagnosis, include_ok: bool = False) -> str:
+    """Render a diagnosis as text, worst finding first.
+
+    Args:
+        diagnosis: The findings to render.
+        include_ok: Also list the diagnostics that found nothing wrong.
+
+    Returns:
+        The report.
+    """
+    lines = ["caltrust diagnosis", "=" * 18, ""]
+    lines += [f"  {line}" if line else "" for line in
+              diagnosis.summary_lines(include_ok=include_ok)]
+    if not include_ok and diagnosis.passing:
+        names = ", ".join(f.title for f in diagnosis.passing)
+        lines += ["", f"  clean: {names}"]
+    return "\n".join(lines) + "\n"
+
+
+def diagnosis_to_json(diagnosis: Diagnosis) -> Dict[str, Any]:
+    """Serialise a diagnosis to JSON-compatible data.
+
+    Args:
+        diagnosis: The findings to serialise.
+
+    Returns:
+        A dictionary suitable for `json.dumps`.
+    """
+    return diagnosis.to_dict()
 
 
 def session_to_json(session: CalibrationSession) -> Dict[str, Any]:
@@ -291,6 +354,9 @@ def fit_to_json(fit: InstrumentedFit) -> Dict[str, Any]:
             }
             for i, v in enumerate(fit.residuals.per_view)
         ],
+        "cross_validation": (
+            fit.cross_validation.to_dict() if fit.cross_validation else None
+        ),
         "radial_profile": {
             "edges": fit.residuals.radial.edges.tolist(),
             "counts": fit.residuals.radial.counts.tolist(),

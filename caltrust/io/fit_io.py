@@ -2,7 +2,7 @@
 
 The covariance is not stored. It is a deterministic function of the normal
 equations and the `rcond` cut, both of which are stored, so it is rebuilt on
-load. That keeps the bundle small and, more usefully, makes it impossible for a
+load. Only the per-view `u_view` blocks are written, since `u` is their sum. That keeps the bundle small and, more usefully, makes it impossible for a
 saved covariance to disagree with the equations it came from. The bundle records
 the caltrust version that wrote it, so a rebuild under different code is visible
 rather than silent.
@@ -25,10 +25,11 @@ from ..refit.result import (
     RefitOptions,
     conditioning_from_covariance,
 )
+from ..validate.result import CrossValidation
 from .bundle import check_format, read_bundle, write_bundle
 
 FORMAT = "caltrust.fit"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 def save_fit(fit: InstrumentedFit, path: str) -> str:
@@ -59,12 +60,15 @@ def save_fit(fit: InstrumentedFit, path: str) -> str:
         "intrinsic_names": list(equations.intrinsic_names),
         "cost": equations.cost,
         "n_residuals": equations.n_residuals,
+        "cross_validation": (
+            fit.cross_validation.to_dict() if fit.cross_validation else None
+        ),
     }
     arrays = {
         "poses": poses_to_array(list(fit.poses)),
         "residuals": fit.residuals.residuals,
         "view_offsets": fit.residuals.view_offsets,
-        "eq_u": equations.u,
+        "eq_u_view": equations.u_view,
         "eq_w": equations.w,
         "eq_v": equations.v,
         "eq_gradient_intrinsic": equations.gradient_intrinsic,
@@ -95,7 +99,8 @@ def load_fit(path: str) -> InstrumentedFit:
     check_format(manifest, FORMAT, FORMAT_VERSION)
     try:
         equations = NormalEquations(
-            u=arrays["eq_u"],
+            u=arrays["eq_u_view"].sum(axis=0),
+            u_view=arrays["eq_u_view"],
             w=arrays["eq_w"],
             v=arrays["eq_v"],
             gradient_intrinsic=arrays["eq_gradient_intrinsic"],
@@ -136,6 +141,11 @@ def load_fit(path: str) -> InstrumentedFit:
         refitted=bool(manifest.get("refitted", True)),
         options=options,
         prior_rms=manifest.get("prior_rms"),
+        cross_validation=(
+            CrossValidation.from_dict(manifest["cross_validation"])
+            if manifest.get("cross_validation")
+            else None
+        ),
         relative_decrement=float(manifest.get("relative_decrement", 0.0)),
         initial_guess=manifest.get("initial_guess"),
         created=manifest.get("created", ""),

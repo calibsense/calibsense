@@ -159,7 +159,7 @@ def test_fit_bundle_detects_a_missing_array(good_session, tmp_path):
     fit = instrument(good_session)
     path = save_fit(fit, str(tmp_path / "f"))
     manifest, arrays = read_bundle(path)
-    del arrays["eq_u"]
+    del arrays["eq_u_view"]
     broken = write_bundle(str(tmp_path / "broken"), manifest, arrays)
     with pytest.raises(SerializationError, match="missing"):
         load_fit(broken)
@@ -195,3 +195,35 @@ def test_writing_to_an_unwritable_path_is_reported(tmp_path):
     blocker.write_text("not a directory")
     with pytest.raises(SerializationError, match="could not write"):
         write_bundle(str(blocker / "inner" / "b"), {"format": "x"}, {})
+
+
+def test_fit_bundle_carries_the_per_view_information_blocks(good_session, tmp_path):
+    """M4's leverage diagnostic needs them, so they have to survive a round trip."""
+    fit = instrument(good_session)
+    back = load_fit(save_fit(fit, str(tmp_path / "f")))
+    assert np.allclose(back.equations.u_view, fit.equations.u_view)
+    assert np.allclose(back.equations.u, fit.equations.u)
+    assert np.allclose(back.equations.u, back.equations.u_view.sum(axis=0))
+
+
+def test_fit_bundle_round_trips_cross_validation(good_session, tmp_path):
+    import dataclasses
+
+    from caltrust.validate import cross_validate
+
+    validation = cross_validate(good_session)
+    fit = dataclasses.replace(instrument(good_session), cross_validation=validation)
+    back = load_fit(save_fit(fit, str(tmp_path / "f")))
+    assert back.cross_validation is not None
+    assert back.cross_validation.n_folds == validation.n_folds
+    assert back.cross_validation.ratio == pytest.approx(validation.ratio)
+    assert back.cross_validation.degenerate_folds == validation.degenerate_folds
+    assert np.allclose(back.cross_validation.fold_spread, validation.fold_spread)
+    assert [f.camera.fx for f in back.cross_validation.folds] == pytest.approx(
+        [f.camera.fx for f in validation.folds]
+    )
+
+
+def test_a_fit_without_cross_validation_round_trips_as_none(good_session, tmp_path):
+    fit = instrument(good_session)
+    assert load_fit(save_fit(fit, str(tmp_path / "f"))).cross_validation is None

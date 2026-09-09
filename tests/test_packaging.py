@@ -121,3 +121,26 @@ def test_the_frozen_binary_starts_in_a_bare_environment():
     assert result.returncode == 0, result.stderr
     assert "checkerboard" in result.stdout
     assert "pinhole_brown_conrady" in result.stdout
+
+
+def test_the_diagnostic_registry_is_a_literal_not_a_scan():
+    """A frozen build has no filesystem to scan, so the list has to be static."""
+    source = (ROOT / "diagnose" / "report.py").read_text()
+    tree = ast.parse(source)
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "DIAGNOSTICS"
+    ]
+    assert assignments, "DIAGNOSTICS must be defined in diagnose/report.py"
+    assert isinstance(assignments[0].value, ast.Tuple)
+    assert all(isinstance(item, ast.Name) for item in assignments[0].value.elts)
+
+
+def test_every_diagnostic_in_the_registry_is_statically_imported():
+    from caltrust.diagnose.report import DIAGNOSTICS
+
+    source = (ROOT / "diagnose" / "report.py").read_text()
+    for cls in DIAGNOSTICS:
+        assert f"import" in source and cls.__name__ in source, cls.__name__

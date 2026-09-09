@@ -1,0 +1,163 @@
+"""Rig builders that each trigger one specific diagnostic.
+
+A diagnostic is only worth anything if it fires on the fault it is named for and
+stays quiet on the others. These builders make that testable: each one produces a
+capture with a single deliberate defect and known truth.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional, Sequence, Tuple
+
+import numpy as np
+
+from caltrust.core.camera import CameraModel, FisheyeKannalaBrandt, PinholeBrownConrady
+from caltrust.core.observations import ObservationSet, ViewObservations
+from caltrust.core.poses import Pose
+from caltrust.core.session import CalibrationSession
+from caltrust.core.target import Checkerboard
+from caltrust.diagnose.base import DiagnosticContext
+from caltrust.refit import RefitOptions, instrument
+from caltrust.synthetic import pose_for_view, synthesise
+
+IMAGE_SIZE = (1280, 720)
+NOISE_PX = 0.2
+BOARD = Checkerboard(9, 6, 25.0)
+
+#: A well-behaved wide lens: the radial function is monotone over the whole frame.
+WIDE_PINHOLE = PinholeBrownConrady(700.0, 703.0, 639.5, 359.5,
+                                   [-0.30, 0.11, 8e-4, -1.1e-3, -0.022])
+STRONG_FISHEYE = FisheyeKannalaBrandt(330.0, 332.0, 639.5, 359.5,
+                                      [-0.12, 0.04, -0.01, 0.002])
+
+
+def poses(
+    n: int = 24,
+    distances_mm: Sequence[float] = (400.0, 800.0),
+    tilt_degrees: Tuple[float, float] = (20.0, 40.0),
+    lateral_mm: float = 240.0,
+    seed: int = 2,
+    target=BOARD,
+) -> List[Pose]:
+    """Build a pose set with explicit control of every axis a diagnostic reads.
+
+    Args:
+        n: Number of views.
+        distances_mm: Working distances, sampled uniformly between the extremes
+            when two or more are given.
+        tilt_degrees: Range of board tilt.
+        lateral_mm: How far the board wanders sideways, which drives coverage.
+        seed: Random seed.
+        target: The target being placed.
+
+    Returns:
+        One pose per view.
+    """
+    rng = np.random.default_rng(seed)
+    low, high = min(distances_mm), max(distances_mm)
+    return [
+        pose_for_view(
+            target,
+            rng.uniform(low, high) if high > low else low,
+            tilt_rad=np.radians(rng.uniform(*tilt_degrees)),
+            tilt_axis_rad=rng.uniform(0.0, 2 * np.pi),
+            roll_rad=rng.uniform(-np.pi, np.pi),
+            offset_mm=rng.uniform(-lateral_mm, lateral_mm, 2),
+        )
+        for _ in range(n)
+    ]
+
+
+def context(
+    camera: CameraModel = WIDE_PINHOLE,
+    pose_set: Optional[Sequence[Pose]] = None,
+    options: Optional[RefitOptions] = None,
+    noise_px: float = NOISE_PX,
+    target=BOARD,
+    seed: int = 5,
+    cross_validation=None,
+) -> DiagnosticContext:
+    """Synthesise a capture, fit it, and wrap it for the diagnostics.
+
+    Args:
+        camera: The true intrinsics.
+        pose_set: Poses, or `None` for a healthy default.
+        options: Refit settings.
+        noise_px: Corner noise standard deviation.
+        target: The target to project.
+        seed: Seed for the noise.
+        cross_validation: Attach an out-of-sample result.
+
+    Returns:
+        A context ready to hand to any diagnostic.
+    """
+    capture = synthesise(
+        camera, target, list(pose_set if pose_set is not None else poses()),
+        IMAGE_SIZE, noise_px=noise_px, seed=seed,
+    )
+    session = CalibrationSession(observations=capture.observations)
+    fit = instrument(session, options)
+    return DiagnosticContext(fit, capture.observations, cross_validation)
+
+
+def healthy() -> DiagnosticContext:
+    """Real tilt, two working distances, wide lateral coverage."""
+    return context()
+
+
+def frontoparallel() -> DiagnosticContext:
+    """Every board flat-on at one distance: the focal length is undetermined."""
+    return context(pose_set=poses(tilt_degrees=(0.2, 1.5), distances_mm=(800.0,)))
+
+
+def single_depth() -> DiagnosticContext:
+    """Well tilted, but every view at the same distance."""
+    return context(pose_set=poses(distances_mm=(700.0,)))
+
+
+def centre_only() -> DiagnosticContext:
+    """Well tilted and varied in depth, but the board never leaves the middle."""
+    return context(pose_set=poses(lateral_mm=15.0))
+
+
+def tiny_board() -> DiagnosticContext:
+    """The board so far away that corner spacing collapses."""
+    return context(pose_set=poses(distances_mm=(2600.0,), lateral_mm=200.0))
+
+
+def wrong_model() -> DiagnosticContext:
+    """A fisheye lens fitted with Brown-Conrady."""
+    return context(
+        camera=STRONG_FISHEYE,
+        pose_set=poses(distances_mm=(300.0, 420.0), tilt_degrees=(25.0, 40.0),
+                       lateral_mm=260.0, seed=1),
+        options=RefitOptions(model="pinhole"),
+    )
+
+
+def right_model() -> DiagnosticContext:
+    """The same fisheye lens fitted with Kannala-Brandt."""
+    return context(
+        camera=STRONG_FISHEYE,
+        pose_set=poses(distances_mm=(300.0, 420.0), tilt_degrees=(25.0, 40.0),
+                       lateral_mm=260.0, seed=1),
+        options=RefitOptions(model="fisheye"),
+    )
+
+
+def with_bad_view(scale: float = 8.0) -> DiagnosticContext:
+    """A healthy capture with one view given its own much larger noise."""
+    capture = synthesise(
+        WIDE_PINHOLE, BOARD, poses(), IMAGE_SIZE, noise_px=NOISE_PX, seed=5
+    )
+    views = list(capture.observations.views)
+    rng = np.random.default_rng(0)
+    spoiled = views[3]
+    views[3] = ViewObservations(
+        spoiled.view_id,
+        spoiled.point_ids,
+        spoiled.image_points + rng.normal(0.0, scale * NOISE_PX, spoiled.image_points.shape),
+    )
+    observations = ObservationSet(BOARD, IMAGE_SIZE, tuple(views))
+    session = CalibrationSession(observations=observations)
+    return DiagnosticContext(instrument(session), observations)
