@@ -11,3 +11,4 @@ dist/
 htmlcov/
 docs/api/
 .DS_Store
+dist_wheel/
