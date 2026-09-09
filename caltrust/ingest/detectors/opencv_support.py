@@ -94,22 +94,29 @@ def refine_corners(
 ) -> np.ndarray:
     """Sub-pixel refine corner locations, shrinking the window near an edge.
 
+    OpenCV 4 returns detected corners as `(n, 1, 2)` and OpenCV 5 as `(n, 2)`,
+    so both are accepted and the caller gets its own shape back.
+
     Args:
         gray: The 8-bit single-channel image the corners came from.
-        corners: An `(n, 1, 2)` float32 array of corner estimates.
+        corners: Corner estimates, `(n, 2)` or `(n, 1, 2)`.
         window: Requested half-width of the search window, in pixels.
 
     Returns:
-        The refined corners, same shape.
+        The refined corners, in the shape they arrived in. Corners hugging the
+        image border are returned unrefined, because no window fits around them.
     """
+    original = np.asarray(corners)
+    points = original.astype(np.float32).reshape(-1, 1, 2)
     height, width = gray.shape[:2]
-    margin = int(np.floor(np.min([
-        corners[:, 0, 0].min(),
-        corners[:, 0, 1].min(),
-        width - 1 - corners[:, 0, 0].max(),
-        height - 1 - corners[:, 0, 1].max(),
-    ])))
-    half = int(np.clip(min(window, margin - 1), 1, window))
+    x, y = points[:, 0, 0], points[:, 0, 1]
+    margin = int(np.floor(min(
+        x.min(), y.min(), width - 1 - x.max(), height - 1 - y.max()
+    )))
     if margin < 2:
-        return corners
-    return cv2.cornerSubPix(gray, corners, (half, half), (-1, -1), SUBPIX_CRITERIA)
+        return original
+    half = int(np.clip(min(window, margin - 1), 1, window))
+    refined = cv2.cornerSubPix(
+        gray, points, (half, half), (-1, -1), SUBPIX_CRITERIA
+    )
+    return refined.reshape(original.shape)

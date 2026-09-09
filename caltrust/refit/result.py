@@ -37,7 +37,14 @@ class RefitOptions:
         distortion_terms: Number of Brown-Conrady coefficients to estimate: 5,
             8, 12 or 14. Ignored for fisheye, which always has four. Passing 4
             is accepted and means five coefficients with `k3` held at zero.
-        fixed: Intrinsic parameter names to hold at their current value.
+        fixed: Intrinsic parameter names to hold rather than estimate. What
+            "hold" means differs by model, and the difference is OpenCV's, not
+            caltrust's: `cv2.calibrateCamera` keeps a fixed pinhole coefficient
+            at the value it was handed, while `cv2.fisheye.calibrate` sets a
+            fixed Kannala-Brandt coefficient to zero and ignores the value
+            supplied for it. Either way the parameter leaves the estimate and
+            the covariance, so the reported uncertainty is correct; only the
+            resulting value differs.
         tie_aspect: Hold `fy / fx` constant rather than estimating both.
         refit: Re-estimate the parameters. When `False`, the session's existing
             calibration is instrumented in place and only the poses are solved,

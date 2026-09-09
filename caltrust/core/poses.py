@@ -60,20 +60,27 @@ def matrix_to_rotvec(matrix: np.ndarray) -> np.ndarray:
     R = validate_rotation(matrix)
     cos_theta = np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)
     theta = float(np.arccos(cos_theta))
-    axis = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    antisymmetric = np.array(
+        [R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]]
+    )
     if theta < _SMALL_ANGLE:
-        return 0.5 * axis
+        return 0.5 * antisymmetric
     if np.pi - theta < 1e-5:
-        # sin(theta) vanishes, so recover the axis from the symmetric part.
+        # sin(theta) vanishes, so the axis magnitudes come from the symmetric
+        # part, which near pi is R ~ 2nn' - I.
         diagonal = np.clip((np.diag(R) + 1.0) / 2.0, 0.0, None)
         axis = np.sqrt(diagonal)
         largest = int(np.argmax(axis))
         for other in range(3):
             if other != largest:
                 axis[other] = np.copysign(axis[other], R[largest, other])
-        axis = np.copysign(axis, axis[largest])
+        # That fixes the axis only up to a global sign. The antisymmetric part
+        # is vanishingly small here but still carries the sign, and at exactly
+        # pi it is zero and either sign is the same rotation.
+        if axis @ antisymmetric < 0:
+            axis = -axis
         return axis / np.linalg.norm(axis) * theta
-    return axis * (theta / (2.0 * np.sin(theta)))
+    return antisymmetric * (theta / (2.0 * np.sin(theta)))
 
 
 def validate_rotation(matrix: np.ndarray, tolerance: float = 1e-6) -> np.ndarray:

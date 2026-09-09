@@ -11,7 +11,7 @@ import yaml
 from ...core.camera import FisheyeKannalaBrandt, PinholeBrownConrady
 from ...core.session import CalibrationRecord
 from ...errors import UnsupportedFormatError
-from .base import CalibrationReader
+from .base import CalibrationReader, looks_like_opencv_filestorage
 
 #: ROS distortion model names mapped onto caltrust's two families.
 _MODELS = {
@@ -43,8 +43,10 @@ class RosCameraInfoReader(CalibrationReader):
     description: ClassVar[str] = "ROS camera_info YAML"
 
     def sniff(self, path: str, head: str) -> bool:
-        """Match the pair of keys unique to `camera_info`."""
+        """Match the pair of keys unique to `camera_info`, but not OpenCV's own YAML."""
         if os.path.splitext(path)[1].lower() not in (".yml", ".yaml"):
+            return False
+        if looks_like_opencv_filestorage(head):
             return False
         return "camera_matrix" in head and "distortion_model" in head
 

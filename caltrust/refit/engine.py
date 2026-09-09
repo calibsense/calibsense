@@ -341,7 +341,9 @@ def _run_calibration(
     ]
     matrix, distortion = _initial_guess(observations, session, options)
     if model == "fisheye":
-        return _run_fisheye(observations, object_points, image_points, options, matrix)
+        return _run_fisheye(
+            observations, object_points, image_points, options, matrix, distortion
+        )
     camera, poses = _run_pinhole(
         observations, object_points, image_points, options, matrix, distortion
     )
@@ -360,6 +362,10 @@ def _run_pinhole(
         keep = min(terms, distortion.size)
         guess[:keep] = distortion[:keep]
     try:
+        # cv2.calibrateCamera takes float32 point arrays and rejects float64.
+        # Residuals and the covariance are recomputed afterwards in float64
+        # against the original detections, so the downcast affects only the
+        # optimiser's own arithmetic.
         _, camera_matrix, coefficients, rvecs, tvecs = cv2.calibrateCamera(
             [p.reshape(-1, 1, 3).astype(np.float32) for p in object_points],
             [p.reshape(-1, 1, 2).astype(np.float32) for p in image_points],
@@ -384,19 +390,27 @@ def _run_pinhole(
 
 
 def _run_fisheye(
-    observations, object_points, image_points, options, matrix
+    observations, object_points, image_points, options, matrix, distortion
 ) -> Tuple[FisheyeKannalaBrandt, List[Pose], str]:
     # The guess always comes from the ladder, so USE_INTRINSIC_GUESS is always
     # set and OpenCV's own fragile initialiser never runs.
     flags = _fisheye_flags(options, has_guess=True)
     objects = [p.reshape(1, -1, 3) for p in object_points]
     images = [p.reshape(1, -1, 2) for p in image_points]
+    # Starting point for the *free* coefficients. OpenCV's fisheye path zeroes
+    # any coefficient covered by a CALIB_FIX_Kn flag and ignores the value passed
+    # in for it, which is the opposite of what cv2.calibrateCamera does; see the
+    # note on RefitOptions.fixed.
+    coefficient_guess = np.zeros((4, 1))
+    if distortion is not None:
+        keep = min(4, distortion.size)
+        coefficient_guess[:keep, 0] = distortion[:keep]
     attempts: List[str] = []
     for label, guess in _fisheye_guess_ladder(observations, matrix):
         try:
             _, camera_matrix, coefficients, rvecs, tvecs = cv2.fisheye.calibrate(
                 objects, images, observations.image_size,
-                guess.copy(), np.zeros((4, 1)),
+                guess.copy(), coefficient_guess.copy(),
                 flags=flags, criteria=CRITERIA,
             )
         except cv2.error as exc:

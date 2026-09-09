@@ -61,6 +61,7 @@ def read_detections(
     path: str,
     target: Optional[TargetSpec] = None,
     image_size: Optional[Tuple[int, int]] = None,
+    fallback_image_size: Optional[Tuple[int, int]] = None,
 ) -> ObservationSet:
     """Read detections from a JSON or NPZ file.
 
@@ -73,7 +74,11 @@ def read_detections(
         path: The file to read.
         target: The target the points belong to. Required when the file does not
             name one; overrides the file's own when both are present.
-        image_size: Frame size as `(width, height)`. Same rule as `target`.
+        image_size: Frame size as `(width, height)`, overriding the file's own.
+        fallback_image_size: Frame size to use only when the file records none.
+            Kept separate from `image_size` so that a caller supplying a
+            plausible default cannot accidentally overwrite — and thereby agree
+            with — a size the file actually stated.
 
     Returns:
         The reconstructed observation set.
@@ -87,9 +92,9 @@ def read_detections(
         raise UnsupportedFormatError(f"no such detections file: {path}")
     suffix = os.path.splitext(path)[1].lower()
     if suffix == ".json":
-        return _read_json(path, target, image_size)
+        return _read_json(path, target, image_size, fallback_image_size)
     if suffix in (".npz", ".npy"):
-        return _read_npz(path, target, image_size)
+        return _read_npz(path, target, image_size, fallback_image_size)
     raise UnsupportedFormatError(
         f"cannot read detections from {suffix or 'a file with no extension'}; "
         "expected .json or .npz"
@@ -97,18 +102,24 @@ def read_detections(
 
 
 def _resolve(
-    from_file: Optional[Any], override: Optional[Any], what: str, path: str
+    from_file: Optional[Any],
+    override: Optional[Any],
+    what: str,
+    path: str,
+    fallback: Optional[Any] = None,
 ) -> Any:
-    value = override if override is not None else from_file
-    if value is None:
-        raise ValidationError(
-            f"{path} does not record the {what}; pass it explicitly"
-        )
-    return value
+    """Pick a value by precedence: explicit override, then file, then fallback."""
+    for candidate in (override, from_file, fallback):
+        if candidate is not None:
+            return candidate
+    raise ValidationError(f"{path} does not record the {what}; pass it explicitly")
 
 
 def _read_json(
-    path: str, target: Optional[TargetSpec], image_size: Optional[Tuple[int, int]]
+    path: str,
+    target: Optional[TargetSpec],
+    image_size: Optional[Tuple[int, int]],
+    fallback_image_size: Optional[Tuple[int, int]] = None,
 ) -> ObservationSet:
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -124,7 +135,9 @@ def _read_json(
     )
     file_size = tuple(payload["image_size"]) if payload.get("image_size") else None
     resolved_target = _resolve(file_target, target, "target", path)
-    resolved_size = _resolve(file_size, image_size, "image size", path)
+    resolved_size = _resolve(
+        file_size, image_size, "image size", path, fallback_image_size
+    )
 
     views = []
     for index, entry in enumerate(payload["views"]):
@@ -150,7 +163,10 @@ def _read_json(
 
 
 def _read_npz(
-    path: str, target: Optional[TargetSpec], image_size: Optional[Tuple[int, int]]
+    path: str,
+    target: Optional[TargetSpec],
+    image_size: Optional[Tuple[int, int]],
+    fallback_image_size: Optional[Tuple[int, int]] = None,
 ) -> ObservationSet:
     try:
         with np.load(path, allow_pickle=False) as archive:
@@ -184,6 +200,7 @@ def _read_npz(
         image_size,
         "image size",
         path,
+        fallback_image_size,
     )
     views = tuple(
         ViewObservations(f"view{i:04d}", ids[i], points[i]) for i in range(n_views)

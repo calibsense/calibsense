@@ -103,7 +103,10 @@ def session_from_calibration(
     """
     prior = read_calibration(calibration, calibration_format)
     observations = read_detections(
-        detections, target=target, image_size=image_size or prior.image_size
+        detections,
+        target=target,
+        image_size=image_size,
+        fallback_image_size=prior.image_size,
     )
     if observations.image_size != prior.image_size:
         raise IngestError(

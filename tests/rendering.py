@@ -29,20 +29,46 @@ TEXTURE_SCALE = 4.0
 BOARD_MARGIN_MM = 12.0
 
 
-def board_texture(target: TargetSpec) -> Tuple[np.ndarray, np.ndarray]:
-    """Render a board face-on, and say where its corners are in the texture.
+def pattern_extent(target: TargetSpec) -> Tuple[np.ndarray, np.ndarray]:
+    """The board's physical bounds in board-frame millimetres.
+
+    Not the same as the bounding box of the detected points: a checkerboard's
+    squares run half a period past its outermost inner corner, and a ChArUco
+    board's corner ids are all interior, so both boards are physically larger
+    than their point sets.
+
+    Args:
+        target: The target to measure.
+
+    Returns:
+        The `(low, high)` corners as two `(2,)` arrays.
+    """
+    points = target.object_points()[:, :2]
+    if isinstance(target, Checkerboard):
+        step = float(target.object_points()[1, 0] - target.object_points()[0, 0])
+        low = np.array([-step, -step])
+        high = np.array([target.columns * step, target.rows * step])
+    elif isinstance(target, CharucoBoard):
+        step = float(target.object_points()[1, 0] - target.object_points()[0, 0])
+        low = np.zeros(2)
+        high = np.array([target.squares_x * step, target.squares_y * step])
+    else:
+        low, high = points.min(axis=0), points.max(axis=0)
+    return low - BOARD_MARGIN_MM, high + BOARD_MARGIN_MM
+
+
+def board_texture(target: TargetSpec) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Render a board face-on.
 
     Args:
         target: The target to draw.
 
     Returns:
-        The texture image and a `(4, 2)` array of texture pixel coordinates for
-        the board-frame rectangle `[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]`
-        that bounds the pattern plus its margin.
+        The texture image, the board-frame rectangle bounding it in millimetres
+        as `[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]`, and the same rectangle in
+        texture pixel coordinates.
     """
-    points = target.object_points()
-    low = points[:, :2].min(axis=0) - BOARD_MARGIN_MM
-    high = points[:, :2].max(axis=0) + BOARD_MARGIN_MM
+    low, high = pattern_extent(target)
     width = int(round((high[0] - low[0]) * TEXTURE_SCALE))
     height = int(round((high[1] - low[1]) * TEXTURE_SCALE))
     image = np.full((height, width), 255, np.uint8)
@@ -51,22 +77,23 @@ def board_texture(target: TargetSpec) -> Tuple[np.ndarray, np.ndarray]:
         return (np.asarray(xy_mm, dtype=float) - low) * TEXTURE_SCALE
 
     if isinstance(target, Checkerboard):
-        step = points[1, 0] - points[0, 0]
-        # Inner corners sit at multiples of `step`; squares are offset by one
-        # half-period so that the corner grid lands where the detector expects.
-        for row in range(-1, target.rows + 1):
-            for column in range(-1, target.columns + 1):
+        step = float(target.object_points()[1, 0] - target.object_points()[0, 0])
+        # Square (i, j) spans [(i-1)*step, i*step], so square corners land
+        # exactly on the inner corner grid the detector is looking for.
+        for row in range(target.rows + 1):
+            for column in range(target.columns + 1):
                 if (row + column) % 2:
                     continue
-                corner = to_texture([(column - 0.5) * step, (row - 0.5) * step])
-                far = to_texture([(column + 0.5) * step, (row + 0.5) * step])
+                near = to_texture([(column - 1) * step, (row - 1) * step])
+                far = to_texture([column * step, row * step])
                 cv2.rectangle(
                     image,
-                    tuple(np.round(corner).astype(int)),
+                    tuple(np.round(near).astype(int)),
                     tuple(np.round(far).astype(int)),
                     0, -1,
                 )
     elif isinstance(target, CircleGrid):
+        points = target.object_points()
         spacing = float(np.linalg.norm(points[1, :2] - points[0, :2]))
         radius = max(int(round(0.28 * spacing * TEXTURE_SCALE)), 3)
         for point in points:
@@ -79,7 +106,8 @@ def board_texture(target: TargetSpec) -> Tuple[np.ndarray, np.ndarray]:
             cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, target.dictionary)),
         )
         board.setLegacyPattern(target.legacy_pattern)
-        span = np.array([target.squares_x, target.squares_y]) * target.square_size
+        step = float(target.object_points()[1, 0] - target.object_points()[0, 0])
+        span = np.array([target.squares_x, target.squares_y]) * step
         drawn = board.generateImage(
             tuple(np.round(span * TEXTURE_SCALE).astype(int)), marginSize=0
         )
@@ -94,7 +122,7 @@ def board_texture(target: TargetSpec) -> Tuple[np.ndarray, np.ndarray]:
     rectangle = np.array([
         [low[0], low[1]], [high[0], low[1]], [high[0], high[1]], [low[0], high[1]]
     ])
-    return image, rectangle
+    return image, rectangle, to_texture(rectangle)
 
 
 def _undistorted_positions(
@@ -153,10 +181,7 @@ def render_view(
     Returns:
         An 8-bit grayscale image.
     """
-    texture, rectangle = board_texture(target)
-    points = target.object_points()
-    low = points[:, :2].min(axis=0) - BOARD_MARGIN_MM
-    corners_texture = (rectangle - low) * TEXTURE_SCALE
+    texture, rectangle, corners_texture = board_texture(target)
 
     # Project the board rectangle with a pinhole model at the same focal length,
     # then apply distortion by resampling; a homography cannot carry distortion.

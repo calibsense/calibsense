@@ -10,6 +10,29 @@ from ...core.session import CalibrationRecord
 #: Bytes of a file offered to `sniff`. Enough for any header worth matching.
 SNIFF_BYTES = 4096
 
+#: Markers unique to OpenCV's own serialiser. `!!opencv-` covers both
+#: `opencv-matrix` and the `opencv-nd-matrix` that OpenCV 5 writes for a 1-D
+#: array, and `%YAML:` is the colon form OpenCV 4 emits, which is not valid YAML
+#: and therefore appears nowhere else.
+_OPENCV_MARKERS = ("!!opencv-", "<opencv_storage>", "%YAML:")
+
+
+def looks_like_opencv_filestorage(head: str) -> bool:
+    """Whether a file header is OpenCV's own serialisation format.
+
+    Used in both directions: the OpenCV reader requires it, and the YAML readers
+    for ROS and Kalibr require its absence. Without that second check an OpenCV
+    file that happens to carry a `distortion_model` key is claimed by the ROS
+    reader, which then fails on a tag PyYAML cannot construct.
+
+    Args:
+        head: The first `SNIFF_BYTES` bytes of the file, decoded as text.
+
+    Returns:
+        `True` when the header carries an OpenCV FileStorage marker.
+    """
+    return any(marker in head for marker in _OPENCV_MARKERS)
+
 
 class CalibrationReader(ABC):
     """Reads one third-party calibration format.

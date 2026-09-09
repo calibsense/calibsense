@@ -33,7 +33,9 @@ Everything in this repo exists to make that paragraph true and checkable.
 | M5 | Report generation, one command | not started |
 | M6 | Staleness / drift detection | not started |
 
-Current goal is **M1 + M2 only**, built so M3–M6 drop in without rework.
+Current goal was **M1 + M2 only**, built so M3–M6 drop in without rework.
+Both are complete: 635 tests, 98% statement coverage, and the package runs both
+as a pip install and as a 63 MB PyInstaller binary with no Python present.
 
 ---
 
@@ -48,29 +50,44 @@ Current goal is **M1 + M2 only**, built so M3–M6 drop in without rework.
 
 ## M1 — Ingest · task list
 
-- [ ] Core types with no OpenCV dependency: camera models, detections, target specs, session
-- [ ] `TargetSpec` hierarchy: `Checkerboard`, `CharucoBoard`, `CircleGrid`; canonical object points in mm; per-view point IDs so ChArUco's variable subsets are first class
-- [ ] Detectors behind one protocol, statically registered
-- [ ] Image-set ingest: directory walk, detection, failure accounting
-- [ ] Calibration file readers: OpenCV FileStorage, ROS `camera_info`, Kalibr, native JSON
-- [ ] Detection file readers: native, generic JSON/NPZ
-- [ ] Robot pose ingest with SE(3) validation, for hand-eye
-- [ ] Session persistence: single `.npz`, JSON manifest inside, round-trip exact
-- [ ] `caltrust ingest` CLI
+- [x] Core types with no OpenCV dependency: camera models, detections, target specs, session
+- [x] `TargetSpec` hierarchy: `Checkerboard`, `CharucoBoard`, `CircleGrid`; canonical object points in mm; per-view point IDs so ChArUco's variable subsets are first class
+- [x] Detectors behind one protocol, statically registered
+- [x] Image-set ingest: directory walk, detection, failure accounting
+- [x] Calibration file readers: OpenCV FileStorage, ROS `camera_info`, Kalibr, native JSON
+- [x] Detection file readers: native, generic JSON/NPZ
+- [x] Robot pose ingest with SE(3) validation, for hand-eye
+- [x] Session persistence: single `.npz`, JSON manifest inside, round-trip exact
+- [x] `caltrust ingest` CLI
 
 ## M2 — Refit with instrumentation · task list
 
-- [ ] Synthetic rig generator (truth-known cameras, poses, targets, noise) — the test backbone
-- [ ] Analytic Jacobian blocks from `projectPoints`, layout verified empirically and against finite differences
-- [ ] Fisheye Jacobian
-- [ ] Normal equations by view blocks; Schur complement for the intrinsic covariance
-- [ ] σ² estimation with the correct DOF count
-- [ ] Full covariance: intrinsics, extrinsics, cross terms
-- [ ] Correlation matrix and both condition numbers (raw, and Jacobi-scaled — the meaningful one)
-- [ ] Rank-deficiency handling: no silent `inv()`, report the null space
-- [ ] Per-view residual distributions, per-corner residuals, radial binning
-- [ ] Evaluate-without-refit path, for auditing a calibration the user already has
-- [ ] `caltrust refit` CLI, `caltrust show`
+- [x] Synthetic rig generator (truth-known cameras, poses, targets, noise) — the test backbone
+- [x] Analytic Jacobian blocks from `projectPoints`, layout verified empirically and against finite differences
+- [x] Fisheye Jacobian
+- [x] Normal equations by view blocks; Schur complement for the intrinsic covariance
+- [x] σ² estimation with the correct DOF count
+- [x] Full covariance: intrinsics, extrinsics, cross terms
+- [x] Correlation matrix and both condition numbers (raw, and Jacobi-scaled — the meaningful one)
+- [x] Rank-deficiency handling: no silent `inv()`, report the null space
+- [x] Per-view residual distributions, per-corner residuals, radial binning
+- [x] Evaluate-without-refit path, for auditing a calibration the user already has
+- [x] `caltrust refit` CLI, `caltrust show`
+
+Added along the way, because M2 was wrong without them:
+
+- [x] **Identifiability, above the standard deviations.** A pseudo-inverse gives a
+  rank-deficient direction *zero* variance, so a degenerate fit reports false
+  confidence rather than a wide interval. Weak directions come from the null
+  space of the Jacobi-scaled Schur complement, and the report leads with them.
+- [x] **At-optimum test** via the relative Newton decrement, which is scale
+  invariant where a raw gradient norm is not. Matters when instrumenting a
+  calibration produced elsewhere: those are frequently not the optimum of their
+  own detections.
+- [x] **OpenCV flag compatibility by name** (`refit/cv_compat.py`). OpenCV 4 and 5
+  disagree about both where the fisheye flags live and what they are worth.
+- [x] **Fisheye initialisation ladder.** `cv2.fisheye.calibrate` raises rather than
+  degrading when its own initialiser fails, which it does on ordinary captures.
 
 ---
 
@@ -80,8 +97,37 @@ Filled in as tests land. A claim without a row here is not a claim.
 
 | Claim | How it is checked | State |
 |---|---|---|
-| Analytic Jacobian is correct | central-difference agreement, pinhole and fisheye | pending |
-| Covariance is calibrated | Monte Carlo refits vs predicted covariance | pending |
-| Marginal stddevs match OpenCV | vs `calibrateCameraExtended` | pending |
-| Schur complement is exact | vs dense inverse on a small rig | pending |
-| Degeneracy is detected | frontoparallel constant-depth rig shows fx/tz correlation near 1 | pending |
+| Analytic Jacobian is correct | central differences, 6 cameras × 3 poses, both models | **1e-9 relative** |
+| Covariance is calibrated | 250 Monte Carlo refits vs predicted covariance | **sd ratio 0.98–1.02, mean Mahalanobis 9.37 vs 9** |
+| Predicted correlations are right | same Monte Carlo, correlation matrices | **max difference 0.12** |
+| Marginal stddevs match OpenCV | vs `calibrateCameraExtended` | **6 significant figures** |
+| Schur complement is exact | vs dense `σ²(JᵀJ)⁻¹` | **6e-10 relative** |
+| Degeneracy is detected | frontoparallel rig | **`identifiable=False`, weak direction `-0.71*fx -0.71*fy`** |
+| Rodrigues is correct | vs `cv2.Rodrigues`, 60k rotations incl. the π singularity | **4e-8 worst round-trip** |
+| Detectors find real patterns | rendered images, 3 targets × 2 camera models | **0.09–0.4 px mean localisation** |
+| The frozen binary works | `dist/caltrust` in a stripped environment | **full pipeline, fx 899.564 ± 0.751** |
+
+### The correction this milestone forced
+
+The problem statement lists "insufficient depth variation" as the cause of the
+focal-length ambiguity, with `corr(fx, tz) = 0.94` as its signature. Measuring it
+showed that framing is not right, and getting it wrong would produce the wrong
+recommendation. From `examples/degeneracy_demo.py`, 18 views, 0.2 px noise:
+
+| rig | RMS | fx error | identifiable |
+|---|---|---|---|
+| flat, 1 depth | 0.2753 px | +3333.5 px | no |
+| flat, 3 depths | 0.2761 px | −139.1 px | **no** |
+| 20° tilt, 1 depth | 0.2757 px | +2.3 px | yes |
+| 40° tilt, 3 depths | 0.2759 px | +1.3 px | yes |
+
+**Tilt is what makes the focal length identifiable; depth variation alone does
+not**, because every added view brings its own free translation and absorbs a
+global rescale of focal length and depth together. Depth spread is a genuine
+second-order gain — sd(fx) 2.24 → 1.19 — once tilt exists.
+
+And `corr(fx, tz)` is a trap on its own: it reads **0.93 on the good capture**
+and **≈0 on the fully degenerate one**, because a cut direction carries no
+variance to correlate. M3 must therefore check identifiability first and reach
+for the correlation only when the system is non-singular. Recorded so M3
+diagnoses tilt before depth.

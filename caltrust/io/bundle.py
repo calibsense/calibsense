@@ -59,11 +59,11 @@ def write_bundle(
 
     payload = {name: np.asarray(value) for name, value in arrays.items()}
     payload[_MANIFEST_KEY] = np.asarray(encoded)
-    parent = os.path.dirname(os.path.abspath(destination))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
     save = np.savez_compressed if compress else np.savez
     try:
+        parent = os.path.dirname(os.path.abspath(destination))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         save(destination, **payload)
     except OSError as exc:
         raise SerializationError(f"could not write {destination}: {exc}") from exc

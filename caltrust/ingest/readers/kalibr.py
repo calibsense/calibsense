@@ -10,7 +10,7 @@ import numpy as np
 from ...core.camera import FisheyeKannalaBrandt, PinholeBrownConrady
 from ...core.session import CalibrationRecord
 from ...errors import UnsupportedFormatError
-from .base import CalibrationReader
+from .base import CalibrationReader, looks_like_opencv_filestorage
 from .ros import _load_yaml
 
 #: Kalibr distortion model names mapped onto caltrust's two families.
@@ -37,8 +37,10 @@ class KalibrReader(CalibrationReader):
         self.camera = camera
 
     def sniff(self, path: str, head: str) -> bool:
-        """Match Kalibr's characteristic `camN:` block with an `intrinsics` key."""
+        """Match Kalibr's `camN:` block with an `intrinsics` key, but not OpenCV YAML."""
         if os.path.splitext(path)[1].lower() not in (".yml", ".yaml"):
+            return False
+        if looks_like_opencv_filestorage(head):
             return False
         return "cam0:" in head and "intrinsics" in head
 

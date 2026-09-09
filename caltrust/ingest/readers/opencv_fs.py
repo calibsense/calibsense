@@ -11,7 +11,7 @@ import numpy as np
 from ...core.camera import FisheyeKannalaBrandt, PinholeBrownConrady
 from ...core.session import CalibrationRecord
 from ...errors import UnsupportedFormatError
-from .base import CalibrationReader
+from .base import CalibrationReader, looks_like_opencv_filestorage
 
 _MATRIX_KEYS = ("camera_matrix", "cameraMatrix", "K", "intrinsic", "M1")
 _DISTORTION_KEYS = (
@@ -34,13 +34,13 @@ class OpenCVFileStorageReader(CalibrationReader):
     description: ClassVar[str] = "OpenCV FileStorage (.yml / .yaml / .xml)"
 
     def sniff(self, path: str, head: str) -> bool:
-        """Match OpenCV's YAML directive, its XML root tag, or its matrix tag."""
+        """Match OpenCV's XML root tag, its YAML directive, or a matrix tag."""
         suffix = os.path.splitext(path)[1].lower()
         if suffix == ".xml":
             return "<opencv_storage>" in head
         if suffix not in (".yml", ".yaml"):
             return False
-        return "%YAML:" in head or "opencv-matrix" in head
+        return looks_like_opencv_filestorage(head)
 
     def read(self, path: str) -> CalibrationRecord:
         """Parse an OpenCV FileStorage calibration.

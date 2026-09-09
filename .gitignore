@@ -5,6 +5,7 @@ venv/
 build/
 dist/
 *.egg-info/
+*.spec.bak
 .pytest_cache/
 .coverage
 htmlcov/
