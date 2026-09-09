@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "caltrust"
+version = "0.1.0"
+description = "Metric trust for camera calibration: uncertainty, diagnosis and task-space error, not just a reprojection number"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Abhishek Gola", email = "abhishekg5422@gmail.com" }]
+keywords = ["camera calibration", "uncertainty", "covariance", "metrology",
+            "opencv", "photogrammetry", "computer vision"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+# Three runtime dependencies, deliberately. Everything downstream of this
+# package has to survive being frozen into a single PyInstaller binary.
+dependencies = [
+    "numpy>=1.24",
+    "opencv-contrib-python>=4.8",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+docs = ["pdoc>=14.0"]
+binary = ["pyinstaller>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/abhishek-gola/caltrust"
+
+[project.scripts]
+caltrust = "caltrust.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["caltrust*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = ["slow: multi-second statistical tests (Monte Carlo, image rendering)"]
+filterwarnings = ["error::DeprecationWarning:caltrust.*"]

@@ -1,0 +1,76 @@
+"""Resolving OpenCV calibration flags across versions.
+
+OpenCV 4 keeps the fisheye flags in `cv2.fisheye` with their own bit numbering,
+and defines same-named constants in `cv2` with *different* values for the
+pinhole path. OpenCV 5 merged them into one namespace on the pinhole numbering
+and moved the fisheye-only flags to high bits.
+
+Reading `cv2.CALIB_FIX_K1` and handing it to `cv2.fisheye.calibrate` therefore
+silently fixes the wrong coefficient on OpenCV 4 and the right one on OpenCV 5.
+Every flag is resolved by name through this module so that mistake cannot be
+made, and the test suite checks the resolved values against the fisheye
+namespace wherever it exists.
+"""
+
+from __future__ import annotations
+
+from typing import Dict
+
+import cv2
+
+from ..errors import RefitError
+
+_cache: Dict[str, int] = {}
+
+
+def fisheye_flag(name: str) -> int:
+    """Resolve a fisheye calibration flag by name.
+
+    Args:
+        name: A flag name such as `"CALIB_FIX_SKEW"`, without a namespace.
+
+    Returns:
+        The flag value appropriate to the installed OpenCV, preferring
+        `cv2.fisheye` when it defines the name.
+
+    Raises:
+        RefitError: Neither namespace defines the flag.
+    """
+    key = f"fisheye.{name}"
+    if key in _cache:
+        return _cache[key]
+    namespace = getattr(cv2, "fisheye", None)
+    value = getattr(namespace, name, None) if namespace is not None else None
+    if value is None:
+        value = getattr(cv2, name, None)
+    if value is None:
+        raise RefitError(
+            f"this OpenCV build ({cv2.__version__}) defines no fisheye flag "
+            f"{name!r} in either cv2.fisheye or cv2"
+        )
+    _cache[key] = int(value)
+    return _cache[key]
+
+
+def pinhole_flag(name: str) -> int:
+    """Resolve a pinhole calibration flag by name.
+
+    Args:
+        name: A flag name such as `"CALIB_RATIONAL_MODEL"`.
+
+    Returns:
+        The flag value.
+
+    Raises:
+        RefitError: The installed OpenCV does not define the flag.
+    """
+    if name in _cache:
+        return _cache[name]
+    value = getattr(cv2, name, None)
+    if value is None:
+        raise RefitError(
+            f"this OpenCV build ({cv2.__version__}) defines no flag {name!r}; "
+            "caltrust needs OpenCV 4.8 or newer"
+        )
+    _cache[name] = int(value)
+    return _cache[name]

@@ -1,0 +1,232 @@
+"""Assembling the normal equations, keeping the block structure.
+
+The Jacobian of a calibration is not a dense matrix and should never be built as
+one. Intrinsic columns touch every residual; each view's six pose columns touch
+only that view's residuals. Storing it as `U`, a stack of `W_i`, and a stack of
+`V_i` keeps memory linear in the number of views instead of quadratic, and makes
+the Schur complement — the thing that actually produces the intrinsic covariance
+— a short loop rather than a large inverse.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
+
+import numpy as np
+
+from ..core.camera import CameraModel
+from ..core.observations import ObservationSet
+from ..core.parameters import ParameterBlock, extrinsic_names
+from ..core.poses import Pose
+from ..errors import RefitError, ValidationError
+from .linalg import DEFAULT_RCOND, SymmetricInverse, block_inverse_stack, invert_symmetric
+from .projection import Projector, projector_for
+
+#: Pose parameters per view: three for rotation, three for translation.
+POSE_DIMENSION = 6
+
+
+@dataclass(frozen=True)
+class NormalEquations:
+    """The Gauss-Newton normal equations in block form.
+
+    Attributes:
+        u: Intrinsic-intrinsic block, shape `(p, p)` over free parameters.
+        w: Intrinsic-pose cross blocks, shape `(v, p, 6)`.
+        v: Pose-pose blocks, shape `(v, 6, 6)`.
+        gradient_intrinsic: `J_intrinsic.T @ residual`, shape `(p,)`.
+        gradient_pose: `J_pose.T @ residual` per view, shape `(v, 6)`.
+        cost: Sum of squared residuals.
+        n_residuals: Number of scalar residuals, two per observed point.
+        intrinsic_names: Names of the free intrinsic parameters.
+    """
+
+    u: np.ndarray
+    w: np.ndarray
+    v: np.ndarray
+    gradient_intrinsic: np.ndarray
+    gradient_pose: np.ndarray
+    cost: float
+    n_residuals: int
+    intrinsic_names: Tuple[str, ...]
+
+    @property
+    def n_views(self) -> int:
+        """Number of views."""
+        return int(self.v.shape[0])
+
+    @property
+    def n_intrinsic(self) -> int:
+        """Number of free intrinsic parameters."""
+        return int(self.u.shape[0])
+
+    @property
+    def n_parameters(self) -> int:
+        """Total free parameters, intrinsics plus six per view."""
+        return self.n_intrinsic + POSE_DIMENSION * self.n_views
+
+    @property
+    def degrees_of_freedom(self) -> int:
+        """Residuals minus parameters.
+
+        Zero or negative means the model has as many knobs as the data has
+        constraints, and no variance can be estimated at all.
+        """
+        return self.n_residuals - self.n_parameters
+
+    @property
+    def rms(self) -> float:
+        """Root-mean-square reprojection error in pixels.
+
+        Computed per point rather than per residual component, which is the
+        convention `cv2.calibrateCamera` reports and therefore the number the
+        engineer will compare against.
+        """
+        points = self.n_residuals // 2
+        return float(np.sqrt(self.cost / points)) if points else 0.0
+
+    @property
+    def gradient_norm(self) -> float:
+        """Norm of the full gradient.
+
+        At a converged least-squares minimum this is near zero. A large value
+        means the parameters being instrumented are not the optimum of the data
+        they are being instrumented against, which is worth saying out loud when
+        auditing a calibration produced elsewhere.
+        """
+        return float(
+            np.sqrt(
+                np.sum(self.gradient_intrinsic ** 2) + np.sum(self.gradient_pose ** 2)
+            )
+        )
+
+    def parameter_names(self) -> Tuple[str, ...]:
+        """Names of every free parameter, intrinsics first then each view's pose."""
+        names: List[str] = list(self.intrinsic_names)
+        for index in range(self.n_views):
+            names.extend(extrinsic_names(index))
+        return tuple(names)
+
+    def schur_complement(
+        self, rcond: float = DEFAULT_RCOND
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Eliminate the pose blocks, leaving the intrinsic system.
+
+        Args:
+            rcond: Relative eigenvalue cut used when inverting each pose block.
+
+        Returns:
+            A tuple `(s, v_inverse, y, singular_views)`. `s` is the Schur
+            complement `U - sum_i W_i V_i^-1 W_i.T`, shape `(p, p)`. `v_inverse`
+            holds each `V_i^-1`. `y` holds `Y_i = V_i^-1 W_i.T`, shape
+            `(v, 6, p)`, which is what the extrinsic and cross covariance blocks
+            are built from. `singular_views` flags views whose pose block was
+            rank deficient.
+        """
+        v_inverse, singular = block_inverse_stack(self.v, rcond)
+        y = np.einsum("nij,nkj->nik", v_inverse, self.w)
+        s = self.u - np.einsum("nik,nkj->ij", self.w, y)
+        return s, v_inverse, y, singular
+
+
+def assemble(
+    camera: CameraModel,
+    poses: Sequence[Pose],
+    observations: ObservationSet,
+    block: ParameterBlock,
+    weights: Optional[Sequence[np.ndarray]] = None,
+    projector: Optional[Projector] = None,
+) -> Tuple[NormalEquations, List[np.ndarray]]:
+    """Build the normal equations and per-view residuals at a given parameter set.
+
+    Args:
+        camera: The intrinsic model to linearise around.
+        poses: One board-to-camera pose per view, in view order.
+        observations: The detected points.
+        block: Which intrinsic parameters are free, and any ties between them.
+        weights: Optional per-point weights, one `(n_i,)` array per view. Each
+            weight scales that point's squared residual contribution.
+        projector: Override the projector, for tests.
+
+    Returns:
+        The normal equations and a list of `(n_i, 2)` residual arrays, one per
+        view, in pixels and *not* weighted, so that residual statistics stay in
+        the units an engineer reads.
+
+    Raises:
+        ValidationError: The pose count or a weight array does not match.
+        RefitError: A view could not be projected.
+    """
+    if len(poses) != observations.n_views:
+        raise ValidationError(
+            f"{len(poses)} poses for {observations.n_views} views"
+        )
+    if block.n_full != len(camera.parameter_names()):
+        raise ValidationError(
+            f"parameter block covers {block.n_full} parameters but "
+            f"{camera.kind} has {len(camera.parameter_names())}"
+        )
+    projector = projector or projector_for(camera)
+    reduction = block.reduction()
+    n_free = reduction.shape[1]
+    if n_free == 0:
+        raise ValidationError("no intrinsic parameter is free; nothing to estimate")
+
+    u = np.zeros((n_free, n_free))
+    w = np.zeros((observations.n_views, n_free, POSE_DIMENSION))
+    v = np.zeros((observations.n_views, POSE_DIMENSION, POSE_DIMENSION))
+    gradient_intrinsic = np.zeros(n_free)
+    gradient_pose = np.zeros((observations.n_views, POSE_DIMENSION))
+    residuals: List[np.ndarray] = []
+    cost = 0.0
+    n_residuals = 0
+
+    for index, (view, pose) in enumerate(zip(observations.views, poses)):
+        object_points = view.object_points(observations.target)
+        try:
+            projected, d_intrinsic_full, d_pose = projector.project_with_jacobian(
+                camera, pose, object_points
+            )
+        except Exception as exc:  # OpenCV raises cv2.error, not a caltrust type
+            raise RefitError(f"view {view.view_id!r} could not be projected: {exc}") from exc
+        residual = projected - view.image_points
+        residuals.append(residual)
+
+        d_intrinsic = d_intrinsic_full @ reduction
+        flat = residual.reshape(-1)
+        if weights is not None:
+            scale = _row_scale(weights[index], view.n_points, view.view_id)
+            d_intrinsic = d_intrinsic * scale[:, None]
+            d_pose = d_pose * scale[:, None]
+            flat = flat * scale
+        u += d_intrinsic.T @ d_intrinsic
+        w[index] = d_intrinsic.T @ d_pose
+        v[index] = d_pose.T @ d_pose
+        gradient_intrinsic += d_intrinsic.T @ flat
+        gradient_pose[index] = d_pose.T @ flat
+        cost += float(flat @ flat)
+        n_residuals += flat.size
+
+    equations = NormalEquations(
+        u=u,
+        w=w,
+        v=v,
+        gradient_intrinsic=gradient_intrinsic,
+        gradient_pose=gradient_pose,
+        cost=cost,
+        n_residuals=n_residuals,
+        intrinsic_names=block.free_names(),
+    )
+    return equations, residuals
+
+
+def _row_scale(weight: np.ndarray, n_points: int, view_id: str) -> np.ndarray:
+    values = np.asarray(weight, dtype=float).reshape(-1)
+    if values.size != n_points:
+        raise ValidationError(
+            f"view {view_id!r}: {values.size} weights for {n_points} points"
+        )
+    if np.any(values < 0) or not np.all(np.isfinite(values)):
+        raise ValidationError(f"view {view_id!r}: weights must be finite and non-negative")
+    return np.repeat(np.sqrt(values), 2)
