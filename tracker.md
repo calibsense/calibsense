@@ -34,8 +34,9 @@ Everything in this repo exists to make that paragraph true and checkable.
 | M6 | Staleness / drift detection | not started |
 
 Current goal was **M1 + M2 only**, built so M3–M6 drop in without rework.
-Both are complete: 635 tests, 98% statement coverage, and the package runs both
-as a pip install and as a 63 MB PyInstaller binary with no Python present.
+Both are complete: 651 tests at 98% statement coverage, and the package runs
+both as a pip install (three transitive dependencies) and as a 63 MB
+PyInstaller binary with no Python present.
 
 ---
 

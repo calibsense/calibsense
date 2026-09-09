@@ -188,8 +188,9 @@ Every numeric claim has a test that could fail.
 | Detectors find real patterns | rendered images, all three targets, both camera models | 0.09-0.4 px mean localisation error |
 | The frozen binary works | `dist/caltrust` in a stripped environment | full pipeline, `fx = 899.564 +/- 0.751` |
 
-    635 passed, 10 skipped in 44s
-    TOTAL  2935 statements, 69 missed, 98%
+    651 passed, 10 skipped in 84s        # make test
+    571 passed, 80 deselected in 3s      # make fast
+    TOTAL  2940 statements, 63 missed, 98%
 
 The ten skips are OpenCV-4-only flag-namespace checks. `make test` runs
 everything; `make fast` skips the Monte Carlo and image-rendering tests.
