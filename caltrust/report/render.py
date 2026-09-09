@@ -79,12 +79,10 @@ def render_pdf(audit: Audit) -> bytes:
     document.rule(1.0, (0.3, 0.3, 0.32))
     document.space(8)
 
-    if not audit.trustworthy:
+    for caveat in audit.caveats():
         document.bar(document.margin, document.content_width, 16.0, (0.96, 0.90, 0.89))
         document.text(
-            "  THIS CALIBRATION DOES NOT DETERMINE EVERY PARAMETER - "
-            "EVERY FIGURE BELOW IS A LOWER BOUND",
-            8.5, "bold", colour=_COLOURS[Severity.CRITICAL],
+            "  " + caveat.upper(), 8.5, "bold", colour=_COLOURS[Severity.CRITICAL]
         )
         document.space(8)
 
@@ -344,12 +342,8 @@ def render_text(audit: Audit) -> str:
         The report.
     """
     lines: List[str] = [audit.metadata.title, "=" * len(audit.metadata.title), ""]
-    if not audit.trustworthy:
-        lines += [
-            "THIS CALIBRATION DOES NOT DETERMINE EVERY PARAMETER.",
-            "Every figure below is a lower bound.",
-            "",
-        ]
+    for caveat in audit.caveats():
+        lines += [caveat.upper(), ""]
     for sentence in audit.headline():
         lines += [sentence, ""]
     lines += ["findings", "-" * 8]

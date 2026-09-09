@@ -436,7 +436,7 @@ Every numeric claim has a test that could fail.
 | The PDF is a valid PDF | streams decompressed and searched; Quartz rasterises it | headline and contact present |
 | Helvetica metrics are right | hand-checked against the AFM table | exact |
 
-    943 passed, 11 skipped in 183s       # make test
+    972 passed, 11 skipped in 163s       # make test
     TOTAL  5191 statements, 153 missed, 97%
 
 The skips are OpenCV-4-only flag-namespace checks. `make test` runs everything;

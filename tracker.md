@@ -35,7 +35,7 @@ Everything in this repo exists to make that paragraph true and checkable.
 | **M7** | **Report** — one run, a JSON with every number and a PDF that leads with the task-space statement and ends with an open question. | **done** |
 | M8 | Staleness / drift detection | not started |
 
-M1 through M7 are complete: 943 tests at 97% statement coverage, running both as
+M1 through M7 are complete: 972 tests at 97% statement coverage, running both as
 a pip install (three transitive dependencies) and as a PyInstaller binary with no
 Python present. `caltrust report` produces the paragraph from section 1.8 from
 measured data.

@@ -137,11 +137,51 @@ class Audit:
     def trustworthy(self) -> bool:
         """Whether any number in this report can be read at face value.
 
-        `False` when the calibration leaves a parameter direction undetermined.
-        Everything downstream of that is a lower bound, and the report says so
-        rather than printing a figure that looks like an answer.
+        `False` when something makes every figure below a bound rather than an
+        answer. `caveats` says which, and this is just "is that list empty".
+
+        This flag is the one thing a machine consumer is likely to branch on, so
+        it has to cover every such condition rather than the first one that was
+        implemented. It used to mean identifiability alone.
         """
-        return self.fit.conditioning.identifiable
+        return not self.caveats()
+
+    def caveats(self) -> Tuple[str, ...]:
+        """Why every figure in this report is a bound rather than an answer.
+
+        Two conditions qualify, and they fail in the same direction for
+        different reasons. An unidentifiable calibration leaves a parameter
+        direction with no variance at all, so every interval derived from it is
+        narrower than the truth. Correlated corner noise leaves the covariance
+        itself measurably too tight, which the noise model finding quantifies.
+        Both mean the same thing to a reader — the figures understate — so both
+        belong in the banner the report opens with.
+
+        Returns:
+            One sentence per condition, worst first, or an empty tuple when
+            every figure can be read as it stands.
+        """
+        # Kept to one terse line each, because these are set as a full-width
+        # banner in the PDF and a second line there would be a wrapped
+        # afterthought rather than a warning.
+        reasons: List[str] = []
+        if not self.fit.conditioning.identifiable:
+            reasons.append(
+                "This calibration does not determine every parameter - "
+                "every figure below is a lower bound"
+            )
+        for finding in self.diagnosis.findings:
+            if finding.cause != "noise_model":
+                continue
+            if finding.severity < Severity.CRITICAL:
+                continue
+            factor = finding.metrics.get("worst_inflation")
+            scale = f" by about {factor:.1f}x" if factor else ""
+            reasons.append(
+                "The corner noise is correlated - every figure below is too "
+                f"tight{scale}"
+            )
+        return tuple(reasons)
 
     def dominant_cause(self) -> Optional[Any]:
         """The worst finding that names a cause rather than a symptom.
@@ -207,6 +247,7 @@ class Audit:
             "headline": list(self.headline()),
             "severity": self.severity.label,
             "trustworthy": self.trustworthy,
+            "caveats": list(self.caveats()),
             "session": text_render.session_to_json(self.session),
             "fit": text_render.fit_to_json(self.fit),
             "diagnosis": self.diagnosis.to_dict(),

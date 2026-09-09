@@ -209,6 +209,14 @@ def degenerate_audit():
     return run_audit(session, n_samples=400, forecast_samples=300)
 
 
+@pytest.fixture
+def correlated_audit():
+    """A capture whose intervals are too tight for a reason other than rank."""
+    capture = rigs.with_correlated_noise()
+    session = CalibrationSession(observations=capture.observations)
+    return run_audit(session, n_samples=400, forecast_samples=300)
+
+
 @pytest.mark.slow
 def test_an_audit_gathers_every_milestone(good_audit):
     assert good_audit.fit is not None
@@ -253,7 +261,47 @@ def test_a_degenerate_audit_is_flagged_untrustworthy(degenerate_audit):
 @pytest.mark.slow
 def test_a_healthy_audit_calls_its_reprojection_error_honest(good_audit):
     assert good_audit.trustworthy
+    assert good_audit.caveats() == ()
     assert any("honest error estimate" in s for s in good_audit.headline())
+
+
+@pytest.mark.slow
+def test_correlated_noise_makes_the_whole_audit_untrustworthy(correlated_audit):
+    """`trustworthy` has to cover every way the figures become a bound.
+
+    A reader who branches on this flag would otherwise ship a calibration whose
+    intervals the report itself says are several times too tight, because the
+    flag used to mean identifiability alone and this capture is identifiable.
+    """
+    assert correlated_audit.fit.conditioning.identifiable
+    assert not correlated_audit.trustworthy
+    caveats = correlated_audit.caveats()
+    assert len(caveats) == 1
+    assert "corner noise is correlated" in caveats[0]
+    assert "too tight" in caveats[0]
+
+
+@pytest.mark.slow
+def test_the_caveats_reach_the_json_and_both_renderers(correlated_audit):
+    import json
+
+    payload = json.loads(render_json(correlated_audit))
+    assert payload["trustworthy"] is False
+    assert payload["caveats"] == list(correlated_audit.caveats())
+
+    assert "CORNER NOISE IS CORRELATED" in render_text(correlated_audit)
+    assert b"CORNER NOISE IS CORRELATED" in pdf_streams(render_pdf(correlated_audit))[0]
+
+
+@pytest.mark.slow
+def test_a_banner_line_fits_the_pdf_content_width(correlated_audit, degenerate_audit):
+    """The banner is one line by design, so it must not silently overflow."""
+    from caltrust.report.pdf import A4, text_width
+
+    available = A4[0] - 2 * 56.0
+    for audit in (correlated_audit, degenerate_audit):
+        for caveat in audit.caveats():
+            assert text_width("  " + caveat.upper(), 8.5, "bold") <= available, caveat
 
 
 @pytest.mark.slow

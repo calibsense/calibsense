@@ -451,8 +451,11 @@ def test_deterministic_makes_a_report_byte_identical(tmp_path, session_file, cap
               "--samples", "250", "--seed", "3", "--task", "length:800mm:100mm"])
         capsys.readouterr()
         payload = json.loads(js.read_text())
-        # The timestamp is the one field that legitimately differs.
+        # Wall-clock stamps legitimately differ, and there are two of them: the
+        # report's own and the fit's. Popping only the first made this test pass
+        # or fail depending on whether the two runs straddled a second boundary.
         payload["metadata"].pop("created")
+        payload["fit"].pop("created")
         digests.append(json.dumps(payload, sort_keys=True))
     assert digests[0] == digests[1]
 
