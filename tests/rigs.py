@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Rig builders that each trigger one specific diagnostic.
 
 A diagnostic is only worth anything if it fires on the fault it is named for and
@@ -159,6 +170,43 @@ def with_bad_view(scale: float = 8.0) -> DiagnosticContext:
         spoiled.point_ids,
         spoiled.image_points + rng.normal(0.0, scale * NOISE_PX, spoiled.image_points.shape),
     )
+    observations = ObservationSet(BOARD, IMAGE_SIZE, tuple(views))
+    session = CalibrationSession(observations=observations)
+    return DiagnosticContext(instrument(session), observations)
+
+
+def with_correlated_noise(
+    length_px: float = 200.0, sigma: float = 0.25, seed: int = 0
+) -> DiagnosticContext:
+    """A healthy capture whose corner noise varies smoothly across each frame.
+
+    Independent, anisotropic and heteroscedastic noise all leave the classical
+    covariance roughly right. Spatially correlated noise does not: it is partly
+    absorbable by the pose and distortion parameters, so it lowers the residual
+    while raising the estimator's real spread. That is the one violation of the
+    assumed noise shape that matters, and this is the rig for it.
+
+    Args:
+        length_px: Correlation length of the noise field in pixels. Two corners
+            this far apart share about 60 per cent of their error.
+        sigma: Marginal noise deviation per coordinate, in pixels.
+        seed: Random seed.
+
+    Returns:
+        A context whose noise model check should fail.
+    """
+    capture = synthesise(WIDE_PINHOLE, BOARD, poses(), IMAGE_SIZE, noise_px=0.0, seed=5)
+    rng = np.random.default_rng(seed)
+    views = []
+    for view in capture.observations.views:
+        points = view.image_points
+        distance = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+        kernel = np.exp(-0.5 * (distance / length_px) ** 2) * sigma ** 2
+        factor = np.linalg.cholesky(kernel + 1e-9 * np.eye(points.shape[0]))
+        error = np.stack(
+            [factor @ rng.normal(size=points.shape[0]) for _ in range(2)], axis=1
+        )
+        views.append(ViewObservations(view.view_id, view.point_ids, points + error))
     observations = ObservationSet(BOARD, IMAGE_SIZE, tuple(views))
     session = CalibrationSession(observations=observations)
     return DiagnosticContext(instrument(session), observations)

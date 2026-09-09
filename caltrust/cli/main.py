@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """The `caltrust` command line.
 
 Built on `argparse` rather than a third-party framework, and with a static
@@ -130,7 +141,19 @@ def build_parser() -> argparse.ArgumentParser:
             f"task shorthand:\n  {TASK_SHORTHAND_HELP}"
         ),
     )
-    parser.add_argument("--version", action="version", version=f"caltrust {__version__}")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=(
+            f"caltrust {__version__}\n"
+            "Copyright (C) 2026 Abhishek Gola\n"
+            "Licence AGPL-3.0-only: GNU Affero GPL version 3 "
+            "<https://www.gnu.org/licenses/agpl-3.0.html>\n"
+            "This is free software with NO WARRANTY, to the extent permitted by law.\n"
+            "Modifying it and offering network access to the result obliges you to "
+            "publish your source."
+        ),
+    )
     parser.add_argument(
         "--deterministic",
         action="store_true",

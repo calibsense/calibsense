@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Guards on the two shipping targets: the pip package and the frozen binary.
 
 These are cheap checks for mistakes that are invisible in a normal test run and
@@ -144,3 +155,79 @@ def test_every_diagnostic_in_the_registry_is_statically_imported():
     source = (ROOT / "diagnose" / "report.py").read_text()
     for cls in DIAGNOSTICS:
         assert f"import" in source and cls.__name__ in source, cls.__name__
+
+
+def test_the_licence_file_is_the_real_agpl_text():
+    text = (REPO / "LICENSE").read_text()
+    assert "GNU AFFERO GENERAL PUBLIC LICENSE" in text.splitlines()[0]
+    assert "Version 3, 19 November 2007" in text
+    # Section 13 is what distinguishes the AGPL from the GPL; if it is missing,
+    # the file is the wrong licence.
+    assert "Remote Network Interaction" in text
+    assert len(text) > 30_000
+
+
+def test_pyproject_declares_the_same_licence():
+    text = (REPO / "pyproject.toml").read_text()
+    assert 'license = { text = "AGPL-3.0-only" }' in text
+    assert "GNU Affero General Public License v3" in text
+    assert 'license-files = ["LICENSE"]' in text
+
+
+def test_every_source_file_carries_the_spdx_header():
+    """A licence nobody can find in the file they are reading is not much use."""
+    missing = []
+    for root in ("caltrust", "tests", "examples"):
+        base = REPO / root
+        if not base.exists():
+            continue
+        for path in base.rglob("*.py"):
+            if "__pycache__" in str(path):
+                continue
+            head = path.read_text()[:800]
+            if "SPDX-License-Identifier: AGPL-3.0-only" not in head:
+                missing.append(str(path.relative_to(REPO)))
+    assert not missing, f"no SPDX header in: {missing}"
+
+
+def test_the_pyinstaller_spec_carries_it_too():
+    head = (REPO / "packaging" / "caltrust.spec").read_text()[:800]
+    assert "SPDX-License-Identifier: AGPL-3.0-only" in head
+
+
+def test_the_header_sits_above_the_docstring_not_instead_of_it():
+    """Comments before a docstring are fine; replacing it would break pdoc."""
+    import caltrust
+    import caltrust.refit.covariance
+    import caltrust.report.pdf
+    import caltrust.task.tasks
+
+    for module in (caltrust, caltrust.refit.covariance, caltrust.report.pdf,
+                   caltrust.task.tasks):
+        assert module.__doc__, f"{module.__name__} lost its docstring"
+        assert "SPDX" not in module.__doc__, f"{module.__name__} header ate the docstring"
+
+
+def test_the_version_flag_states_the_licence():
+    """The AGPL asks an interactive program to say so."""
+    result = subprocess.run(
+        [sys.executable, "-m", "caltrust", "--version"],
+        capture_output=True, text=True, cwd=str(REPO),
+    )
+    assert result.returncode == 0
+    assert "AGPL-3.0-only" in result.stdout
+    assert "NO WARRANTY" in result.stdout
+    assert "network access" in result.stdout
+
+
+def test_no_stale_permissive_licence_claim_remains():
+    """The project was Apache-2.0 first; a leftover claim would be a real problem."""
+    offenders = []
+    for name in ("README.md", "pyproject.toml", "tracker.md", "open-items.md"):
+        path = REPO / name
+        if not path.exists():
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if "Apache" in line and "OpenCV" not in line:
+                offenders.append(f"{name}:{number}: {line.strip()}")
+    assert not offenders, f"stale licence claims: {offenders}"

@@ -48,6 +48,12 @@ threatens the millimetre claim rather than by how hard it is to fix.
 
 ## Non-negotiables carried through every milestone
 
+- **AGPL-3.0-only.** `LICENSE` carries the authoritative FSF text, every source
+  file an SPDX header, and `--version` the notice the licence asks an interactive
+  program to print. A PyInstaller binary is a distribution of the program, so
+  shipping `dist/caltrust` obliges you to accompany it with the corresponding
+  source or a written offer. The three runtime dependencies are one-way
+  compatible into an AGPL work.
 - Ships as a pip package **and** as a single PyInstaller binary. No dynamic plugin discovery, no `__file__` data loading without frozen-path handling, stdlib argparse, three runtime deps (`numpy`, `opencv-contrib-python`, `pyyaml`).
 - Every numeric claim has a test that could fail. Covariance is checked against Monte Carlo, Jacobians against finite differences, the Schur complement against a dense inverse.
 - Docstrings are the documentation. Google style, `pdoc` generates the API reference from them with no hand-written duplication.

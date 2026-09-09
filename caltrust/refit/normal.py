@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Assembling the normal equations, keeping the block structure.
 
 The Jacobian of a calibration is not a dense matrix and should never be built as
@@ -44,6 +55,11 @@ class NormalEquations:
         cost: Sum of squared residuals.
         n_residuals: Number of scalar residuals, two per observed point.
         intrinsic_names: Names of the free intrinsic parameters.
+        gradient_intrinsic_view: Each view's contribution to
+            `gradient_intrinsic`, shape `(v, p)`. Kept for the same reason as
+            `u_view`: a view-clustered covariance needs each view's own score
+            and the sum cannot be taken apart again. `None` only for equations
+            restored from a bundle written before caltrust stored it.
     """
 
     u: np.ndarray
@@ -55,6 +71,7 @@ class NormalEquations:
     cost: float
     n_residuals: int
     intrinsic_names: Tuple[str, ...]
+    gradient_intrinsic_view: Optional[np.ndarray] = None
 
     @property
     def n_views(self) -> int:
@@ -154,6 +171,41 @@ class NormalEquations:
         y = np.einsum("nij,nkj->nik", v_inverse, self.w)
         return self.u_view - np.einsum("nik,nkj->nij", self.w, y)
 
+    def view_scores(self, rcond: float = DEFAULT_RCOND) -> np.ndarray:
+        """Each view's score for the intrinsics, after its own pose is removed.
+
+        The intrinsic update solves `S dx = sum_i s_i` with
+
+            s_i = A_i' r_i - Y_i' (B_i' r_i),   Y_i = V_i^-1 W_i'
+
+        so `s_i` is everything view `i` still has to say about the intrinsics
+        once its own six pose parameters have absorbed what they can. The
+        scatter of these across views is what a view-clustered covariance is
+        built from, and their sum is the reduced gradient that
+        `CalibrationCovariance.newton_decrement` already forms.
+
+        Args:
+            rcond: Relative eigenvalue cut used when inverting each pose block.
+
+        Returns:
+            A `(v, p)` array whose column sums are the reduced gradient.
+
+        Raises:
+            RefitError: The per-view intrinsic gradient was not recorded. This
+                happens only for equations restored from a bundle written by a
+                caltrust old enough not to have stored it.
+        """
+        if self.gradient_intrinsic_view is None:
+            raise RefitError(
+                "these normal equations carry only the summed intrinsic "
+                "gradient, so per-view scores cannot be recovered; re-run the "
+                "refit to get a view-clustered covariance"
+            )
+        _, _, y, _ = self.schur_complement(rcond)
+        return self.gradient_intrinsic_view - np.einsum(
+            "nij,ni->nj", y, self.gradient_pose
+        )
+
 
 def assemble(
     camera: CameraModel,
@@ -201,7 +253,7 @@ def assemble(
     u_view = np.zeros((observations.n_views, n_free, n_free))
     w = np.zeros((observations.n_views, n_free, POSE_DIMENSION))
     v = np.zeros((observations.n_views, POSE_DIMENSION, POSE_DIMENSION))
-    gradient_intrinsic = np.zeros(n_free)
+    gradient_intrinsic_view = np.zeros((observations.n_views, n_free))
     gradient_pose = np.zeros((observations.n_views, POSE_DIMENSION))
     residuals: List[np.ndarray] = []
     cost = 0.0
@@ -228,7 +280,7 @@ def assemble(
         u_view[index] = d_intrinsic.T @ d_intrinsic
         w[index] = d_intrinsic.T @ d_pose
         v[index] = d_pose.T @ d_pose
-        gradient_intrinsic += d_intrinsic.T @ flat
+        gradient_intrinsic_view[index] = d_intrinsic.T @ flat
         gradient_pose[index] = d_pose.T @ flat
         cost += float(flat @ flat)
         n_residuals += flat.size
@@ -238,7 +290,8 @@ def assemble(
         u_view=u_view,
         w=w,
         v=v,
-        gradient_intrinsic=gradient_intrinsic,
+        gradient_intrinsic=gradient_intrinsic_view.sum(axis=0),
+        gradient_intrinsic_view=gradient_intrinsic_view,
         gradient_pose=gradient_pose,
         cost=cost,
         n_residuals=n_residuals,

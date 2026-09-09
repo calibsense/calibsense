@@ -1,9 +1,22 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Reading and writing instrumented fits.
 
 The covariance is not stored. It is a deterministic function of the normal
 equations and the `rcond` cut, both of which are stored, so it is rebuilt on
-load. Only the per-view `u_view` blocks are written, since `u` is their sum. That keeps the bundle small and, more usefully, makes it impossible for a
-saved covariance to disagree with the equations it came from. The bundle records
+load. Only the per-view `u_view` and `gradient_intrinsic_view` blocks are
+written, since `u` and `gradient_intrinsic` are their sums. That keeps the
+bundle small and, more usefully, makes it impossible for a saved covariance to
+disagree with the equations it came from. The bundle records
 the caltrust version that wrote it, so a rebuild under different code is visible
 rather than silent.
 """
@@ -29,7 +42,7 @@ from ..validate.result import CrossValidation
 from .bundle import check_format, read_bundle, write_bundle
 
 FORMAT = "caltrust.fit"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 
 def save_fit(fit: InstrumentedFit, path: str) -> str:
@@ -71,7 +84,7 @@ def save_fit(fit: InstrumentedFit, path: str) -> str:
         "eq_u_view": equations.u_view,
         "eq_w": equations.w,
         "eq_v": equations.v,
-        "eq_gradient_intrinsic": equations.gradient_intrinsic,
+        "eq_gradient_intrinsic_view": equations.gradient_intrinsic_view,
         "eq_gradient_pose": equations.gradient_pose,
         "radial_edges": radial.edges,
         "radial_counts": radial.counts,
@@ -97,13 +110,20 @@ def load_fit(path: str) -> InstrumentedFit:
     """
     manifest, arrays = read_bundle(path)
     check_format(manifest, FORMAT, FORMAT_VERSION)
+    # Bundles at format 2 stored only the summed intrinsic gradient. The sum
+    # cannot be taken apart again, so those fits load without a view-clustered
+    # covariance and the noise-model diagnostic says so rather than guessing.
+    gradient_intrinsic_view = arrays.get("eq_gradient_intrinsic_view")
     try:
         equations = NormalEquations(
             u=arrays["eq_u_view"].sum(axis=0),
             u_view=arrays["eq_u_view"],
             w=arrays["eq_w"],
             v=arrays["eq_v"],
-            gradient_intrinsic=arrays["eq_gradient_intrinsic"],
+            gradient_intrinsic=gradient_intrinsic_view.sum(axis=0)
+            if gradient_intrinsic_view is not None
+            else arrays["eq_gradient_intrinsic"],
+            gradient_intrinsic_view=gradient_intrinsic_view,
             gradient_pose=arrays["eq_gradient_pose"],
             cost=float(manifest["cost"]),
             n_residuals=int(manifest["n_residuals"]),

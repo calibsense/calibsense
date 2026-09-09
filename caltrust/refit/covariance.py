@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Parameter covariance, in the factored form the block structure gives for free.
 
 This is failure 2 from the problem statement. OpenCV's `calibrateCameraExtended`
@@ -16,6 +27,14 @@ is reconstructed on demand:
 * `cov(pose_i, pose_j)    = s2 * (V_i^-1 [i == j] + Y_i @ S^-1 @ Y_j.T)`
 
 with `Y_i = V_i^-1 @ W_i.T`.
+
+Two estimates come out of this, not one. `sigma^2 * S^-1` is the classical
+result and assumes corner noise is independent, isotropic and homoscedastic.
+`RobustCovariance` is the same quantity computed from the scatter of the views
+themselves, and assumes only that different views are independent. Reporting
+both is what turns the noise model from an assertion into a measurement: when
+they agree the assumption held for this capture, and when they do not the
+classical interval is understating the uncertainty by the ratio between them.
 """
 
 from __future__ import annotations
@@ -40,6 +59,14 @@ from .normal import POSE_DIMENSION, NormalEquations
 
 #: Refuse to materialise a dense covariance larger than this, in entries.
 DENSE_LIMIT = 64_000_000
+
+#: Fewest views a view-clustered covariance needs before it is worth quoting.
+#: A sandwich built from `G` clusters has roughly `G - 1` degrees of freedom, and
+#: below about ten the estimate is itself so noisy that it would trade one
+#: unchecked number for another: across repeated realisations of the same rig its
+#: own spread was 21 to 45 per cent at fourteen views and it grows sharply as the
+#: count falls.
+MIN_CLUSTERS_FOR_ROBUST = 10
 
 #: Scaled eigenvalue ratio below which a direction counts as poorly determined.
 #: Chosen so that a direction contributing less than about one part in a
@@ -73,6 +100,92 @@ class WeakDirection:
 
 
 @dataclass(frozen=True)
+class RobustCovariance:
+    """Intrinsic covariance that assumes only that views are independent.
+
+    `sigma^2 * S^-1` estimates the noise *scale* from the data but asserts its
+    *shape*: one variance, the same in x and y, uncorrelated between points.
+    Measured against Monte Carlo, two of the ways real corner noise departs from
+    that turn out not to matter — anisotropy along the edge direction and noise
+    that is worse in some views than others both leave the classical covariance
+    within about fifteen per cent, because several hundred corners at varied
+    orientations average them out and `cost / dof` picks up the average power.
+
+    Spatial correlation across the frame is the one that bites, and it bites
+    hard. Noise that varies smoothly over the image — field-varying defocus,
+    an illumination gradient pulling on the sub-pixel estimator, a bowed board,
+    motion blur, rolling shutter — is partly absorbable by the pose and
+    distortion parameters, so it *lowers* the residual while *raising* the
+    estimator's true spread. On a synthetic rig with a 200 px correlation
+    length, `sigma` fell from 0.25 px to 0.055 px while the actual spread of
+    `fx` rose from 3.0 px to 5.2 px: a beautiful RMS and an interval nearly
+    eight times too tight, with nothing in the report to say so.
+
+    Weights cannot fix that, which is why this is not the per-point weighting
+    route. The error lives in the off-diagonal of the noise covariance, and no
+    amount of reweighting a diagonal repairs a correlation.
+
+    So this estimate drops the assumption instead of refining it. Each view
+    contributes one score `s_i` for the intrinsics, and the covariance comes
+    from the scatter of those scores:
+
+        Cov = S^-1 (sum_i s_i s_i') S^-1 * G / (G - 1)
+
+    Nothing is assumed about the noise *within* a view, so anisotropy, blur,
+    neighbour correlation and heavy tails are all absorbed rather than
+    modelled. Only the independence of different views is relied on. That is
+    the same argument `caltrust.diagnose.model` already makes for the radial
+    residual profile, applied to the parameters instead of the residuals.
+
+    Two things it cannot do. It is blind to any error that is *identical*
+    across views — a board scale error moves every view coherently, so it
+    contributes nothing to the between-view scatter and stays invisible here.
+    And it covers the intrinsics only: each view's pose is estimated from that
+    view's own residuals, so there is exactly one cluster per pose and no
+    between-cluster scatter to build a pose block from.
+
+    Attributes:
+        covariance: Sandwich covariance of the free intrinsics, shape `(p, p)`.
+        n_clusters: Views that contributed a score.
+        intrinsic_names: Names of the free intrinsics, matching the rows.
+    """
+
+    covariance: np.ndarray
+    n_clusters: int
+    intrinsic_names: Tuple[str, ...]
+
+    @property
+    def degrees_of_freedom(self) -> int:
+        """Clusters minus one.
+
+        The scores sum to zero at the optimum, so the between-view scatter
+        carries one fewer degree of freedom than there are views. An interval
+        built from `std` wants a `t` multiplier on this many degrees of freedom
+        rather than the normal one the classical deviations are usually read
+        with — at fourteen views that is about eight per cent wider.
+        """
+        return max(self.n_clusters - 1, 0)
+
+    @property
+    def usable(self) -> bool:
+        """Whether there are enough views for the estimate to mean anything.
+
+        `False` does not mean the number below is wrong, only that it is too
+        noisy to quote against the classical one. Reports say so rather than
+        showing a ratio nobody should act on.
+        """
+        return self.n_clusters >= MIN_CLUSTERS_FOR_ROBUST
+
+    def std(self) -> np.ndarray:
+        """Standard deviation of each free intrinsic under this estimate."""
+        return np.sqrt(np.clip(np.diag(self.covariance), 0.0, None))
+
+    def correlation(self) -> np.ndarray:
+        """Correlation matrix of the free intrinsics under this estimate."""
+        return correlation_from_covariance(self.covariance)
+
+
+@dataclass(frozen=True)
 class CalibrationCovariance:
     """The covariance of a calibration, held in factored form.
 
@@ -86,6 +199,11 @@ class CalibrationCovariance:
             condition numbers and unconstrained directions.
         singular_views: Views whose own pose block was rank deficient, usually
             because the view holds too few or too nearly collinear points.
+        robust: The same intrinsic covariance estimated from the scatter of the
+            views instead of from `sigma^2`, which is what checks the noise
+            model rather than assuming it. `None` when the equations did not
+            carry per-view scores, which happens only for a fit restored from an
+            old bundle.
     """
 
     sigma2: float
@@ -100,6 +218,7 @@ class CalibrationCovariance:
     _y: np.ndarray
     _scaled_eigenvalues: np.ndarray
     _scaled_vectors: np.ndarray
+    robust: Optional[RobustCovariance] = None
 
     @property
     def n_intrinsic(self) -> int:
@@ -130,6 +249,40 @@ class CalibrationCovariance:
         suite checks the two agree.
         """
         return np.sqrt(np.clip(np.diag(self.intrinsic), 0.0, None))
+
+    def robust_inflation(self) -> np.ndarray:
+        """How much wider the view-clustered deviation is, per free intrinsic.
+
+        This is the number that says whether the noise model can be believed
+        *for this capture*. One means the classical deviation and the estimate
+        that assumes nothing about the noise shape agree, so `sigma^2 * S^-1` is
+        defensible here by measurement rather than by assertion. Three means the
+        reported interval is a third of what the data supports.
+
+        Returns:
+            One ratio per free intrinsic, or an empty array when no robust
+            estimate is available. Entries whose classical deviation is zero —
+            the directions a pseudo-inverse dropped — come back as `nan`, since
+            there is no interval there to widen.
+        """
+        if self.robust is None:
+            return np.zeros(0)
+        classical = self.intrinsic_std()
+        return np.where(classical > 0, self.robust.std() / np.where(
+            classical > 0, classical, 1.0
+        ), np.nan)
+
+    def worst_robust_inflation(self) -> float:
+        """The largest inflation across the free intrinsics.
+
+        Returns:
+            The headline ratio, or `nan` when there is no robust estimate or
+            every parameter sits in a dropped direction.
+        """
+        ratios = self.robust_inflation()
+        if ratios.size == 0 or not np.any(np.isfinite(ratios)):
+            return float("nan")
+        return float(np.nanmax(ratios))
 
     def extrinsic_block(self, view: int) -> np.ndarray:
         """Covariance of one view's pose parameters.
@@ -436,4 +589,40 @@ def covariance_from_normal_equations(
         _y=y,
         _scaled_eigenvalues=scaled_eigenvalues,
         _scaled_vectors=scaled_vectors,
+        robust=_robust_covariance(equations, spectrum.inverse, rcond),
+    )
+
+
+def _robust_covariance(
+    equations: NormalEquations, schur_inverse: np.ndarray, rcond: float
+) -> Optional[RobustCovariance]:
+    """The view-clustered sandwich, when the equations carry per-view scores.
+
+    Args:
+        equations: The assembled normal equations.
+        schur_inverse: `S^-1`, already computed for the classical covariance.
+        rcond: Relative eigenvalue cut, passed through to the pose inverses.
+
+    Returns:
+        The robust estimate, or `None` for equations restored from a bundle old
+        enough not to have stored the per-view intrinsic gradient.
+    """
+    if equations.gradient_intrinsic_view is None:
+        return None
+    scores = equations.view_scores(rcond)
+    clusters = int(scores.shape[0])
+    if clusters < 2:
+        return None
+    # G / (G - 1) is the standard small-sample correction for a cluster-robust
+    # estimator. It does not fully undo the shrinkage of residuals at a fitted
+    # optimum, so this estimate stays mildly optimistic at low view counts —
+    # measured 0.67 to 0.96 of the true spread at fourteen views, 0.79 to 1.05
+    # at thirty. That is the right direction to be wrong in only because the
+    # alternative it replaces was out by a factor of eight.
+    meat = scores.T @ scores * (clusters / (clusters - 1.0))
+    covariance = schur_inverse @ meat @ schur_inverse
+    return RobustCovariance(
+        covariance=0.5 * (covariance + covariance.T),
+        n_clusters=clusters,
+        intrinsic_names=equations.intrinsic_names,
     )

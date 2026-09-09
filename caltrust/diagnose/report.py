@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Running every diagnostic and ranking what comes back."""
 
 from __future__ import annotations
@@ -14,6 +25,7 @@ from .coverage import ImageCoverage, TargetScale
 from .generalisation import OutOfSampleError
 from .geometry import DepthVariation, FrontoparallelDominance, PoseDiversity
 from .model import DistortionModelAdequacy
+from .noise import NoiseModelValidity
 from .views import OutlierViews
 
 #: Every diagnostic, in report order. A literal tuple rather than a plugin scan,
@@ -26,6 +38,7 @@ DIAGNOSTICS: Tuple[type, ...] = (
     ImageCoverage,
     TargetScale,
     DistortionModelAdequacy,
+    NoiseModelValidity,
     OutlierViews,
 )
 

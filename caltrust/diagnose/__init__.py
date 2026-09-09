@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """M4 — degeneracy and coverage diagnostics.
 
 `diagnose` runs every check and returns a ranked set of findings, each naming
@@ -31,6 +42,7 @@ from .model import (
     flatness_z,
     radial_trend,
 )
+from .noise import NoiseModelValidity
 from .report import DIAGNOSTICS, Diagnosis, diagnose
 from .views import OutlierViews, ViewInfluence, view_influences
 
@@ -44,6 +56,7 @@ __all__ = [
     "Finding",
     "FrontoparallelDominance",
     "ImageCoverage",
+    "NoiseModelValidity",
     "OutOfSampleError",
     "OutlierViews",
     "PoseDiversity",

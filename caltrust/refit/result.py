@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """What an instrumented refit produces.
 
 Everything the standard calibration call computes and discards, in one object:
@@ -289,6 +300,15 @@ class InstrumentedFit:
             f"{self.conditioning.scaled_condition_number:.3e}, "
             f"rank {self.conditioning.rank}/{self.conditioning.n_intrinsic}",
         ]
+        robust = covariance.robust
+        if robust is not None and robust.usable:
+            worst_inflation = covariance.worst_robust_inflation()
+            lines.append(
+                f"noise model  view-clustered deviations are "
+                f"{worst_inflation:.2f}x the classical ones at worst, over "
+                f"{robust.n_clusters} views"
+                + ("" if worst_inflation < 1.4 else "  (see the noise model finding)")
+            )
         if not self.conditioning.identifiable:
             lines.append(
                 "IDENTIFIABILITY  this capture does not determine every parameter; "

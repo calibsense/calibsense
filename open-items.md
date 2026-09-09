@@ -8,36 +8,125 @@ Ordered by how much each one threatens the product's headline claim — a
 defensible statement of measurement error in millimetres — not by how hard it is
 to fix.
 
-Last reviewed at the end of M7.
+Last reviewed at the end of M7, with item 1 revisited after it was measured.
 
 ---
 
 ## Tier 1 — these threaten the millimetre claim
 
-### 1. The noise model is asserted, never measured
+### 1. The noise model is now measured, and only one violation of it matters
 
-`sigma^2 = cost / (m - p)` assumes corner noise is independent, isotropic and
-Gaussian per coordinate. Real corner noise is none of those. It is anisotropic
-(elongated along the edge direction), correlated between neighbours (sub-pixel
-windows overlap and share image gradients), and heteroscedastic (worse under
-blur, high tilt and low contrast).
+This item used to say the noise model was asserted and never checked. It has
+been measured, and the measurement changed the shape of the problem, so what
+follows is the answer rather than the worry.
 
-**And the Monte Carlo test that validates the covariance is circular on this
-point.** `tests/test_covariance.py::test_covariance_is_calibrated_against_monte_carlo`
-injects noise through `synthesise(noise_px=...)`, which is i.i.d. isotropic
-Gaussian — exactly the model the covariance assumes. That test validates the
-propagation algebra and says nothing about the assumption. Every interval
-caltrust reports is conditional on a noise model nobody has checked against a
-real camera.
+`sigma^2 = cost / (m - p)` estimates the noise *scale* from the data but asserts
+its *shape*: one variance per coordinate, the same in x and y, uncorrelated
+between points. Monte Carlo against known truth, 14 and 30 views, sigma = 0.25
+px, injecting one violation at a time and comparing the predicted intrinsic
+deviation against the empirical spread of repeated refits:
 
-M3 gives a partial answer that is worth noting: the across-fold parameter spread
-resamples the actual views and assumes nothing about the noise. It is not an
-unbiased estimate of the sampling deviation, because folds overlap, but it is a
-genuine model-free cross-check and it is now reported beside the predicted one.
+| Violation | predicted / empirical | 95% interval covers |
+|---|---|---|
+| i.i.d. isotropic (the assumption) | 1.01–1.08 | 94–97% |
+| anisotropic, 3:1 along the edge direction | 0.98–1.13 | 94–97% |
+| heteroscedastic across views, scale `exp(N(0,0.6))` | 1.04–1.17 | 95–97% |
+| heavy tails, 5% of corners 5x worse | 0.97–1.04 | 93–96% |
+| per-view radial wobble | 0.96–1.07 | 94–96% |
+| **spatially correlated field, 60 px length** | **0.32–0.51** | **47%** |
+| **spatially correlated field, 200 px length** | **0.12–0.39** | **15%** |
 
-*Fix:* measure the corner covariance from repeated static captures, or estimate
-per-point anisotropic weights from the image gradient structure tensor. Feed
-them in as weights — see item 5, which currently blocks this.
+So the three violations this item used to name are all harmless. Several hundred
+corners at varied orientations average anisotropy away, and `cost / dof` picks up
+whatever average power heteroscedasticity leaves. The mechanism it named for
+correlation was also wrong: `cornerSubPix` uses an 11 to 21 px window and corners
+sit 60 px apart or more, so the windows never overlap.
+
+**What does break the covariance is spatial correlation of the noise across the
+frame, and it breaks it by a factor of eight.** The real sources are
+field-varying defocus and astigmatism, illumination and vignetting gradients
+pulling on the sub-pixel estimator, board non-flatness, motion blur and rolling
+shutter — the last two being item 14, which this makes considerably more
+important than "listed and absent".
+
+The failure is silent in the worst possible way. A correlated field is partly
+absorbable by the pose and distortion parameters, so it *lowers* the residual
+while *raising* the estimator's real spread: at a 200 px correlation length
+`sigma` fell from 0.25 px to 0.055 px while the spread of `fx` rose from 3.0 px
+to 5.2 px. A beautiful RMS and an interval 7.7x too tight. Great RMS, wrong
+answer, no warning — which is the headline failure this whole tool exists to
+catch, and it was invisible.
+
+**The old proposed fix was aimed at the wrong target.** Weights fix *efficiency*,
+not *honesty*: under correlated noise `sigma^2 (J'WJ)^-1` is still wrong however
+good the weights are, because the error lives in the off-diagonal of the noise
+covariance and reweighting a diagonal cannot repair a correlation. Separately,
+`refit.normal.assemble` takes one scalar per point, so it could not express
+anisotropy even with item 5 unblocked. **This item is therefore not blocked by
+items 5 or 6, and never was.**
+
+*Done instead:* `refit.covariance.RobustCovariance`, a view-clustered sandwich
+that assumes only that different views are independent — the same argument
+`diagnose/model.py` already makes for the radial profile, applied to the
+parameters. After eliminating each view's own pose, view `i` scores
+`s_i = A_i'r_i - Y_i'(B_i'r_i)` and
+
+    Cov = S^-1 (sum_i s_i s_i') S^-1 * G / (G - 1)
+
+Nothing is assumed about the noise *within* a view. Measured:
+
+| | classical | sandwich |
+|---|---|---|
+| i.i.d., 14 views | 0.98–1.06 | 0.67–0.96 |
+| correlated 200 px, 14 views | **0.12–0.40** | 0.57–0.90 |
+| i.i.d., 30 views | 0.97–1.08 | 0.83–0.99 |
+| correlated 200 px, 30 views | **0.13–0.46** | 0.79–1.05 |
+
+The ratio between the two estimates is reported as the `noise_model` finding,
+which turns this item from an unfalsifiable caveat into a per-capture check that
+runs on the user's own data. Agreement means the assumption held *here*, by
+measurement. `tests/test_covariance.py` now injects a correlated field and pins
+both halves: that the classical covariance fails coverage, and that the robust
+one recovers it.
+
+Three limitations, all real:
+
+* The sandwich stays mildly optimistic at low view counts — the standard
+  shrinkage of residuals at a fitted optimum, only partly undone by `G/(G-1)`.
+  It is the right direction to be wrong in only because what it replaces was out
+  by a factor of eight. A delete-one-view jackknife measured conservative
+  instead (0.88–1.46) at the cost of `G` refits; worth adding if the optimism
+  ever matters.
+* It is **intrinsics only**. Each view's pose is estimated from that view's own
+  residuals, so there is one cluster per pose and no between-cluster scatter to
+  build a pose block from. See item 1b.
+* It is blind to error that is *identical* across views. A board scale error
+  moves every view coherently and contributes nothing to the between-view
+  scatter, so it stays invisible here. That is item 2, and the two are
+  complementary rather than alternatives.
+
+M3's across-fold parameter spread remains a second model-free cross-check, still
+not unbiased because the folds overlap.
+
+### 1b. The noise-model inflation is reported but not propagated
+
+The `noise_model` finding says every interval is, say, 3.2x too tight. It does
+not widen them. Nothing downstream consumes the ratio: `task.sampling` still
+factorises the classical joint covariance, so the task-space millimetres — the
+product's headline number — carry the understatement the finding just named.
+
+The reason it was left is that the honest scaling is not obvious. The sandwich
+covers the intrinsics only, so inflating the joint covariance means either
+scaling the pose and cross blocks by a factor measured from a different block,
+or scaling the whole thing by one scalar. Both are defensible; neither is
+derived. Item 3b's principle applies — inventing a number would be worse than
+saying so — so for now the finding states the factor and tells the reader to
+apply it.
+
+*Fix:* the cleanest route is probably to sample from the robust intrinsic block
+directly and keep the classical conditional structure for the poses, which is
+consistent to first order and needs no invented scalar. Wants checking against
+Monte Carlo in task space before it goes in.
 
 ### 2. Board geometry is treated as exact
 
@@ -123,7 +212,13 @@ this out loud, which is honest but not a fix.
 `refit.normal.assemble()` accepts and correctly applies them, with tests.
 `refit.engine.instrument()` never passes any, and OpenCV's optimiser cannot use
 them regardless — so even wiring it up would weight the covariance while leaving
-the fit unweighted. This is what blocks item 1.
+the fit unweighted.
+
+This used to be listed as what blocks item 1. It is not: weights buy efficiency,
+not honest intervals, and the measurement in item 1 shows the departures they
+would correct are the ones that did not matter. They also cannot express
+anisotropy as the signature stands — one scalar per point, repeated across x and
+y — so an anisotropic weight needs a 2x2 per point and a signature change first.
 
 ### 6. Delegating the fit to OpenCV costs four things at once
 
@@ -131,7 +226,8 @@ No arbitrary parameter subsets (`cx` and `cy` together or neither, never one),
 no custom or robust loss, no weights, and a forced float32 downcast on the
 pinhole path. A native Levenberg-Marquardt over the Jacobians and Schur solver
 already written would remove all four. **This is the highest-leverage remaining
-work**: it unblocks items 1, 4, 5, and the board-scale parameter in item 2.
+work**: it unblocks items 4, 5, and the board-scale parameter in item 2. It is
+no longer needed for item 1, which turned out not to require weights at all.
 
 ---
 

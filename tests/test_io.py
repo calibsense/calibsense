@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Single-file persistence for sessions and fits."""
 
 from __future__ import annotations
@@ -204,6 +215,44 @@ def test_fit_bundle_carries_the_per_view_information_blocks(good_session, tmp_pa
     assert np.allclose(back.equations.u_view, fit.equations.u_view)
     assert np.allclose(back.equations.u, fit.equations.u)
     assert np.allclose(back.equations.u, back.equations.u_view.sum(axis=0))
+
+
+def test_fit_bundle_carries_the_per_view_scores(good_session, tmp_path):
+    """The noise model check needs them, and the sum cannot be taken apart."""
+    fit = instrument(good_session)
+    back = load_fit(save_fit(fit, str(tmp_path / "f")))
+    assert np.allclose(
+        back.equations.gradient_intrinsic_view, fit.equations.gradient_intrinsic_view
+    )
+    assert np.allclose(
+        back.equations.gradient_intrinsic, fit.equations.gradient_intrinsic
+    )
+    assert np.allclose(
+        back.equations.gradient_intrinsic,
+        back.equations.gradient_intrinsic_view.sum(axis=0),
+    )
+    assert np.allclose(back.covariance.robust.std(), fit.covariance.robust.std())
+
+
+def test_a_format_2_fit_bundle_loads_without_the_noise_check(good_session, tmp_path):
+    """Older bundles kept only the summed gradient, so they lose the check.
+
+    They must still load. Losing a diagnostic is acceptable; refusing to open a
+    file somebody archived last month is not.
+    """
+    from caltrust.io.bundle import read_bundle, write_bundle
+
+    path = save_fit(instrument(good_session), str(tmp_path / "f"))
+    manifest, arrays = read_bundle(path)
+    manifest["format_version"] = 2
+    downgraded = {k: v for k, v in arrays.items() if k != "eq_gradient_intrinsic_view"}
+    downgraded["eq_gradient_intrinsic"] = arrays["eq_gradient_intrinsic_view"].sum(axis=0)
+    old = write_bundle(str(tmp_path / "old"), manifest, downgraded)
+
+    back = load_fit(old)
+    assert back.equations.gradient_intrinsic_view is None
+    assert back.covariance.robust is None
+    assert np.allclose(back.covariance.intrinsic_std(), instrument(good_session).covariance.intrinsic_std())
 
 
 def test_fit_bundle_round_trips_cross_validation(good_session, tmp_path):

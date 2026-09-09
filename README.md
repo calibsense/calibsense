@@ -260,6 +260,7 @@ One named cause per check, each with the numbers behind it and what to do:
 | Distortion model adequacy | chi-square and trend tests on the radial residual profile |
 | Outlier views | each view's share of the intrinsic information, paired with its residual |
 | Out-of-sample error | M3's ratio, gated on per-fold identifiability |
+| Noise model | classical intrinsic deviations against a view-clustered sandwich |
 
 Three of these needed a real decision rather than a formula.
 
@@ -285,6 +286,37 @@ independent unit is cluster-robust and needs no noise assumption:
 | fisheye data, pinhole model | 0.2832 px | **+5.22** | critical |
 
 The RMS moves by 2%. The residual structure is unmistakable.
+
+**The same clustering argument fixes the covariance.** Every deviation caltrust
+prints rests on `sigma^2 = cost / (m - p)`, which measures the noise scale but
+asserts its shape. Injecting one violation at a time showed that most of the
+shape does not matter: anisotropy along the edge direction, noise several times
+worse in some views than others, and a few per cent of badly mis-detected
+corners each leave the predicted deviation within about 15% of the truth.
+
+Spatial correlation across the frame is the exception, and it is severe. A
+correlated field is partly absorbable by the pose and distortion parameters, so
+it *lowers* the residual while *raising* the estimator's real spread:
+
+| noise | reported `sigma` | predicted sd(fx) | actual sd(fx) |
+|---|---|---|---|
+| independent, 0.25 px | 0.253 px | 3.14 px | 3.03 px |
+| correlated, 60 px length | 0.162 px | 1.95 px | **5.69 px** |
+| correlated, 200 px length | 0.055 px | 0.67 px | **5.24 px** |
+
+The RMS gets *better* as the answer gets worse, which is why no residual
+statistic can catch this. So the parameter covariance is computed a second way,
+treating the view as the independent unit exactly as the radial profile does:
+
+    Cov = S^-1 (sum_i s_i s_i') S^-1 * G / (G - 1)
+
+where `s_i` is what view `i` contributes to the intrinsic estimate after its own
+pose has absorbed what it can. Nothing is assumed about the noise within a view.
+The ratio between the two estimates is the `noise_model` finding: near one means
+the assumption held *for this capture*, and 6.5x means every interval in the
+report is that much too tight. Weights would not have fixed this — the error is
+in the off-diagonal of the noise covariance, and reweighting a diagonal cannot
+repair a correlation.
 
 **A slope test alone misses truncation.** A truncated radial polynomial leaves a
 residual that oscillates in sign, so the primary criterion is a chi-square over
@@ -380,6 +412,9 @@ Every numeric claim has a test that could fail.
 | Marginal standard deviations are right | vs `cv2.calibrateCameraExtended` | agree to 6 significant figures |
 | The Schur complement is exact | vs a dense `sigma^2 (J'J)^-1` | 6e-10 relative |
 | The covariance is *calibrated* | 250 Monte Carlo refits vs the predicted covariance | predicted/empirical sd within 2-4%; mean Mahalanobis 9.37 against an expected 9 |
+| The assumed noise *shape* mostly does not matter | Monte Carlo injecting anisotropy, per-view heteroscedasticity and heavy tails | predicted/empirical sd stays within 0.96-1.17 for all three |
+| Correlated corner noise breaks it, badly | Monte Carlo with a 200 px correlated field | predicted/empirical sd 0.12-0.39, and `sigma` *falls* from 0.25 to 0.055 px while the true spread rises |
+| The view-clustered covariance recovers it | same rig, sandwich vs classical | 0.12 -> 0.75 of the true spread at 14 views, 0.13 -> 0.84 at 30 |
 | Predicted correlations are right | same Monte Carlo, correlation matrices | max difference 0.12 |
 | Degeneracy is detected | frontoparallel rig | `identifiable = False`, weak direction `-0.71*fx -0.71*fy` |
 | Rodrigues conversion is right | vs `cv2.Rodrigues`, 60k rotations including the pi singularity | 4e-8 worst round-trip |
@@ -507,4 +542,29 @@ documented where they bite:
 
 ## Licence
 
-Apache-2.0.
+**AGPL-3.0-only.** See [LICENSE](LICENSE) for the full text; every source file
+carries an `SPDX-License-Identifier: AGPL-3.0-only` header.
+
+Two consequences worth stating plainly rather than leaving to be discovered.
+
+**Section 13 reaches network use.** If you modify caltrust and let people
+interact with the modified version over a network — an upload-your-calibration
+web service, a report generator behind an internal API — you have to offer those
+users the corresponding source. Running it as a CLI or importing it as a library
+in software you do not distribute triggers nothing.
+
+**Industrial legal departments frequently decline AGPL outright**, and this
+tool's natural customer is a robot-cell integrator or a quality department. That
+is a commercial constraint rather than a technical one, and the usual answer is
+dual licensing: AGPL-3.0-only for the open version alongside a commercial licence
+sold separately. That stays available here because the copyright is held by a
+single author; it stops being simple the moment outside contributions land
+without a contributor agreement.
+
+The three runtime dependencies are compatible with AGPL-3.0: `numpy` is
+BSD-3-Clause, `pyyaml` is MIT, and OpenCV is Apache-2.0 with LGPL-2.1 components
+in the distributed wheels. All are one-way compatible into an AGPL work.
+
+Note that a PyInstaller binary of an AGPL program is a distribution of the
+program, so `dist/caltrust` has to be accompanied by the corresponding source or
+a written offer for it.

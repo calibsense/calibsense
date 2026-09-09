@@ -1,3 +1,14 @@
+# caltrust - metric trust for camera calibration.
+# Copyright (C) 2026 Abhishek Gola
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License, version 3, as published by
+# the Free Software Foundation. This program is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
+
 """Parameter covariance.
 
 Three independent checks, because this is the number the product is built on:
@@ -328,3 +339,181 @@ def test_sigma_is_the_square_root_of_sigma2(good_capture):
 
 def test_weak_direction_threshold_is_a_sane_default():
     assert 0 < WEAK_DIRECTION_THRESHOLD < 1e-3
+
+
+# --- The noise model, and the one violation of it that actually matters -------
+#
+# Every test above this line feeds the covariance noise drawn i.i.d. from an
+# isotropic Gaussian, which is exactly the model the covariance assumes. They
+# check the propagation algebra and say nothing about the assumption. These
+# check the assumption, by breaking it.
+
+
+def correlated_noise(points, rng, length_px, sigma):
+    """Noise that varies smoothly over the image rather than point by point.
+
+    A squared-exponential kernel on image coordinates: two corners `length_px`
+    apart share about 60 per cent of their error. This is what field-varying
+    defocus, an illumination gradient pulling on the sub-pixel refinement, a
+    bowed board, motion blur and a rolling shutter all look like, and it is the
+    one departure from the assumed noise shape that wrecks the covariance.
+    """
+    distance = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+    kernel = np.exp(-0.5 * (distance / length_px) ** 2) * sigma ** 2
+    factor = np.linalg.cholesky(kernel + 1e-9 * np.eye(points.shape[0]))
+    return np.stack([factor @ rng.normal(size=points.shape[0]) for _ in range(2)], axis=1)
+
+
+def reshape_noise(clean, rng, kind, length_px=200.0, sigma=0.25):
+    """Rebuild a noiseless capture with noise of a chosen structure added."""
+    from caltrust.core.observations import ObservationSet, ViewObservations
+
+    views = []
+    for view in clean.views:
+        points = view.image_points
+        error = (
+            rng.normal(0.0, sigma, points.shape)
+            if kind == "independent"
+            else correlated_noise(points, rng, length_px, sigma)
+        )
+        views.append(ViewObservations(view.view_id, view.point_ids, points + error))
+    return ObservationSet(clean.target, clean.image_size, tuple(views))
+
+
+def empirical_spread(clean, kind, trials, seed=11):
+    """Standard deviation of the fitted intrinsics over repeated captures."""
+    rng = np.random.default_rng(seed)
+    samples = np.array(
+        [
+            opencv_calibrate(reshape_noise(clean, rng, kind))[0].to_vector()
+            for _ in range(trials)
+        ]
+    )
+    return samples.std(axis=0, ddof=1)
+
+
+@pytest.fixture
+def noiseless_capture(pinhole, checkerboard):
+    """Fourteen diverse views with no noise at all, to add our own to."""
+    return synthesise(
+        pinhole, checkerboard, diverse_poses(checkerboard, 14, seed=2),
+        (1280, 720), noise_px=0.0, seed=0,
+    ).observations
+
+
+def test_view_scores_sum_to_the_reduced_gradient(good_capture):
+    """The identity the view-clustered covariance is built on."""
+    observations = good_capture.observations
+    camera, poses, _, _ = opencv_calibrate(observations)
+    equations, _ = covariance_at(camera, poses, observations)
+    _, _, y, _ = equations.schur_complement()
+    reduced = equations.gradient_intrinsic - np.einsum(
+        "nij,ni->j", y, equations.gradient_pose
+    )
+    assert np.allclose(equations.view_scores().sum(axis=0), reduced)
+    assert np.allclose(
+        equations.gradient_intrinsic_view.sum(axis=0), equations.gradient_intrinsic
+    )
+
+
+def test_a_robust_covariance_is_available_and_agrees_under_independent_noise(good_capture):
+    """With the assumed noise shape, the two estimates should not disagree."""
+    camera, poses, _, _ = opencv_calibrate(good_capture.observations)
+    _, covariance = covariance_at(camera, poses, good_capture.observations)
+    robust = covariance.robust
+    assert robust is not None and robust.usable
+    assert robust.n_clusters == covariance.n_views
+    assert robust.degrees_of_freedom == covariance.n_views - 1
+    assert robust.covariance.shape == covariance.intrinsic.shape
+    assert np.allclose(robust.covariance, robust.covariance.T)
+    # 1.4 is the diagnostic's warning cut, measured as the point where signal
+    # leaves the sandwich's own scatter at this view count.
+    assert covariance.worst_robust_inflation() < 1.4
+
+
+@pytest.mark.slow
+def test_the_classical_covariance_lies_when_corner_noise_is_correlated(noiseless_capture):
+    """The assumption the Monte Carlo test above cannot see, measured.
+
+    This is the failure the tool exists to catch and the one it was blind to:
+    correlated noise is partly absorbable by the pose and distortion
+    parameters, so it *lowers* the residual while *raising* the estimator's
+    real spread. The RMS improves and the interval collapses.
+    """
+    trials = 200
+    sigma = 0.25
+    empirical = empirical_spread(noiseless_capture, "correlated", trials)
+
+    reference = reshape_noise(noiseless_capture, np.random.default_rng(9999), "correlated")
+    camera, poses, _, rms = opencv_calibrate(reference)
+    _, covariance = covariance_at(camera, poses, reference)
+
+    # The residual looks *better* than the noise actually injected, which is
+    # why no residual statistic can catch this.
+    assert covariance.sigma < 0.5 * sigma, covariance.sigma
+
+    classical = covariance.intrinsic_std() / empirical
+    assert classical.min() < 0.35, f"expected a badly optimistic interval: {classical}"
+
+    robust = covariance.robust.std() / empirical
+    assert robust.min() > 0.4, f"robust estimate still far too tight: {robust}"
+    assert robust.max() < 1.8, f"robust estimate wildly too wide: {robust}"
+    assert robust.min() > 2.0 * classical.min()
+
+    # And the ratio between them is what the report reads to say so.
+    assert covariance.worst_robust_inflation() > 2.0
+
+
+@pytest.mark.slow
+def test_the_robust_covariance_costs_little_under_independent_noise(noiseless_capture):
+    """The control for the test above: no correlation, no false alarm.
+
+    A check that only ever fires is not a check, so the same machinery is run
+    on noise that does satisfy the assumption. The sandwich is mildly
+    optimistic here — that is the known shrinkage of residuals at a fitted
+    optimum with few clusters — but it stays close enough not to raise a flag.
+    """
+    trials = 200
+    empirical = empirical_spread(noiseless_capture, "independent", trials)
+
+    reference = reshape_noise(noiseless_capture, np.random.default_rng(9999), "independent")
+    camera, poses, _, _ = opencv_calibrate(reference)
+    _, covariance = covariance_at(camera, poses, reference)
+
+    classical = covariance.intrinsic_std() / empirical
+    assert classical.min() > 0.75 and classical.max() < 1.35, classical
+
+    robust = covariance.robust.std() / empirical
+    assert robust.min() > 0.55, f"sandwich collapsed on well-behaved noise: {robust}"
+    assert robust.max() < 1.5, robust
+    assert covariance.worst_robust_inflation() < 1.4
+
+
+def test_too_few_views_makes_the_robust_covariance_unusable(pinhole, checkerboard):
+    """Below ten clusters the sandwich is noise, and it says so rather than lying."""
+    capture = synthesise(
+        pinhole, checkerboard, diverse_poses(checkerboard, 6, seed=3),
+        (1280, 720), noise_px=0.2, seed=5,
+    )
+    camera, poses, _, _ = opencv_calibrate(capture.observations)
+    _, covariance = covariance_at(camera, poses, capture.observations)
+    assert covariance.robust is not None
+    assert not covariance.robust.usable
+    assert covariance.robust.n_clusters == covariance.n_views
+
+
+def test_equations_without_per_view_scores_have_no_robust_covariance(good_capture):
+    """An old bundle loses the check rather than silently inventing one."""
+    import dataclasses
+
+    from caltrust.errors import RefitError
+
+    camera, poses, _, _ = opencv_calibrate(good_capture.observations)
+    equations, _ = covariance_at(camera, poses, good_capture.observations)
+    stripped = dataclasses.replace(equations, gradient_intrinsic_view=None)
+    covariance = covariance_from_normal_equations(stripped)
+    assert covariance.robust is None
+    assert covariance.robust_inflation().size == 0
+    assert np.isnan(covariance.worst_robust_inflation())
+    with pytest.raises(RefitError, match="per-view scores"):
+        stripped.view_scores()
