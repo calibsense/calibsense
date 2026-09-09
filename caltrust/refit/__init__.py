@@ -8,12 +8,13 @@ not choose, and the linear algebra for its refusal to hide a rank deficiency.
 
 from __future__ import annotations
 
+from .cv_compat import set_single_threaded
 from .covariance import (
     CalibrationCovariance,
     WeakDirection,
     covariance_from_normal_equations,
 )
-from .engine import instrument
+from .engine import instrument, parameter_block
 from .linalg import (
     SymmetricInverse,
     condition_number,
@@ -51,8 +52,10 @@ __all__ = [
     "correlation_from_covariance",
     "covariance_from_normal_equations",
     "instrument",
+    "parameter_block",
     "invert_symmetric",
     "numerical_jacobian",
     "projector_for",
+    "set_single_threaded",
     "top_correlations",
 ]

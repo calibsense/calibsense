@@ -29,10 +29,13 @@ from ..ingest import (
 )
 from ..diagnose import diagnose
 from ..io import load_fit, load_session, save_fit, save_session
-from ..refit import RefitOptions, instrument
+from ..refit import RefitOptions, instrument, set_single_threaded
+from ..report import ReportMetadata, render_text, run_audit, write_json, write_pdf
 from ..validate import cross_validate
 from . import render
 from .targets import SHORTHAND_HELP, resolve_target
+from .tasks import SHORTHAND_HELP as TASK_SHORTHAND_HELP
+from .tasks import parse_tasks
 
 EXIT_OK = 0
 EXIT_UNEXPECTED = 1
@@ -122,9 +125,19 @@ def build_parser() -> argparse.ArgumentParser:
             "identifiability and residual structure, not just a reprojection number."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"target shorthand:\n  {SHORTHAND_HELP}",
+        epilog=(
+            f"target shorthand:\n  {SHORTHAND_HELP}\n\n"
+            f"task shorthand:\n  {TASK_SHORTHAND_HELP}"
+        ),
     )
     parser.add_argument("--version", action="version", version=f"caltrust {__version__}")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="pin OpenCV to one thread so results are bit-reproducible; "
+             "without it, parallel reduction order makes them differ in the "
+             "last few bits between runs",
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     ingest = subparsers.add_parser(
@@ -207,6 +220,46 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="print the full refit report as well")
     _add_cross_validation_arguments(diagnose_parser)
     diagnose_parser.set_defaults(handler=_diagnose)
+
+    report = subparsers.add_parser(
+        "report",
+        help="one run: refit, cross-validate, diagnose, propagate to millimetres, "
+             "and write a JSON and a PDF",
+    )
+    report.add_argument("session", metavar="SESSION", help="session bundle")
+    report.add_argument("--pdf", metavar="FILE", help="write the PDF here")
+    report.add_argument("--json", dest="json_path", metavar="FILE",
+                        help="write the machine-readable JSON here")
+    report.add_argument("--task", action="append", default=[], metavar="SPEC",
+                        help="measurement to propagate; repeatable. "
+                             f"{TASK_SHORTHAND_HELP}")
+    report.add_argument("--model", choices=("pinhole", "fisheye"),
+                        help="camera model (default: from the session)")
+    report.add_argument("--distortion-terms", type=int, default=5,
+                        choices=(4, 5, 8, 12, 14),
+                        help="Brown-Conrady coefficients (default: %(default)s)")
+    report.add_argument("--fix", action="append", default=[], metavar="PARAM",
+                        help="hold a parameter fixed; repeatable")
+    report.add_argument("--tie-aspect", action="store_true", help="hold fy/fx constant")
+    report.add_argument("--mounting", choices=("eye_in_hand", "eye_to_hand"),
+                        help="solve hand-eye with this mounting; needs robot poses")
+    report.add_argument("--samples", type=int, default=2000, metavar="N",
+                        help="Monte Carlo samples per task (default: %(default)s)")
+    report.add_argument("--folds", type=int, metavar="N",
+                        help="cross-validation folds (default: 5)")
+    report.add_argument("--seed", type=int, default=0, metavar="N",
+                        help="seed, so the report is reproducible (default: %(default)s)")
+    report.add_argument("--camera-name", default="unnamed camera", metavar="NAME",
+                        help="how this camera is known in the plant")
+    report.add_argument("--title", default="Camera calibration measurement audit",
+                        metavar="TEXT", help="report title")
+    report.add_argument("--prepared-by", default="", metavar="NAME",
+                        help="who ran the audit")
+    report.add_argument("--contact", metavar="TEXT",
+                        help="where to send questions; printed as the last line")
+    report.add_argument("--open-question", metavar="TEXT",
+                        help="the question the report puts back to the reader")
+    report.set_defaults(handler=_report)
 
     show = subparsers.add_parser("show", help="print a session or a fit bundle")
     show.add_argument("path", metavar="FILE", help="session or fit bundle")
@@ -332,6 +385,70 @@ def _diagnose(args: argparse.Namespace) -> int:
     return EXIT_OK if diagnosis.severity.name != "CRITICAL" else EXIT_FINDINGS
 
 
+def _report(args: argparse.Namespace) -> int:
+    session = load_session(args.session)
+    options = RefitOptions(
+        model=args.model,
+        distortion_terms=args.distortion_terms,
+        fixed=tuple(args.fix),
+        tie_aspect=args.tie_aspect,
+    )
+    metadata_fields = {
+        "title": args.title,
+        "camera_name": args.camera_name,
+        "prepared_by": args.prepared_by,
+    }
+    if args.contact:
+        metadata_fields["contact"] = args.contact
+    if args.open_question:
+        metadata_fields["open_question"] = args.open_question
+
+    # A base-frame task needs the hand-eye solve to exist first, so the audit
+    # runs once with the default task to obtain it, then again with the real
+    # tasks. Every other task needs only the fit.
+    needs_hand_eye = any(
+        spec.split(":")[0].strip().lower() in ("base", "robot") for spec in args.task
+    )
+    tasks = None
+    if args.task and not needs_hand_eye:
+        tasks = parse_tasks(args.task)
+
+    audit = run_audit(
+        session, options, tasks, ReportMetadata(**metadata_fields),
+        folds=args.folds, n_samples=args.samples, mounting=args.mounting,
+        seed=args.seed,
+    )
+    if needs_hand_eye:
+        if audit.hand_eye is None:
+            print(
+                "caltrust: a base-frame task needs a hand-eye solve; pass "
+                "--mounting and use a session that carries robot poses",
+                file=sys.stderr,
+            )
+            return EXIT_INPUT
+        flange = session.robot.aligned_with(session.observations)[0]
+        audit = run_audit(
+            session, options, parse_tasks(args.task, audit.hand_eye, flange),
+            ReportMetadata(**metadata_fields), folds=args.folds,
+            n_samples=args.samples, mounting=args.mounting, seed=args.seed,
+        )
+
+    print(render_text(audit), end="")
+    written = []
+    if args.pdf:
+        written.append(write_pdf(audit, args.pdf))
+    if args.json_path:
+        written.append(write_json(audit, args.json_path))
+    for path in written:
+        print(f"wrote {path}")
+    if not written:
+        print(
+            "\nnothing written; pass --pdf and/or --json to save the report",
+            file=sys.stderr,
+        )
+    return EXIT_OK if audit.severity.name != "CRITICAL" else EXIT_FINDINGS
+
+
 def _show(args: argparse.Namespace) -> int:
     from ..io.bundle import read_bundle
     from ..io.fit_io import FORMAT as FIT_FORMAT
@@ -372,6 +489,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
+    if getattr(args, "deterministic", False):
+        set_single_threaded(True)
     if not getattr(args, "handler", None):
         # A bare `caltrust`, or `caltrust ingest` with no source.
         (parser if args.command is None else parser).print_help()

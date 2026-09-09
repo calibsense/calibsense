@@ -14,10 +14,11 @@ import numpy as np
 from caltrust.core.camera import CameraModel, FisheyeKannalaBrandt, PinholeBrownConrady
 from caltrust.core.observations import ObservationSet, ViewObservations
 from caltrust.core.poses import Pose
-from caltrust.core.session import CalibrationSession
+from caltrust.core.session import CalibrationSession, RobotPoses
 from caltrust.core.target import Checkerboard
 from caltrust.diagnose.base import DiagnosticContext
 from caltrust.refit import RefitOptions, instrument
+from caltrust.refit.projection import projector_for
 from caltrust.synthetic import pose_for_view, synthesise
 
 IMAGE_SIZE = (1280, 720)
@@ -161,3 +162,97 @@ def with_bad_view(scale: float = 8.0) -> DiagnosticContext:
     observations = ObservationSet(BOARD, IMAGE_SIZE, tuple(views))
     session = CalibrationSession(observations=observations)
     return DiagnosticContext(instrument(session), observations)
+
+
+#: Ground truth for the hand-eye rigs: the camera's pose on the flange, and the
+#: target's pose in the cell.
+TRUE_FLANGE_TO_CAMERA = Pose(
+    np.array([
+        [np.cos(1.55), -np.sin(1.55), 0.0],
+        [np.sin(1.55), np.cos(1.55), 0.0],
+        [0.0, 0.0, 1.0],
+    ]),
+    [42.0, -17.5, 88.0],
+)
+TRUE_BASE_TO_TARGET = Pose(np.diag([1.0, -1.0, -1.0]), [520.0, 120.0, -300.0])
+
+
+def hand_eye_session(
+    mounting: str = "eye_in_hand",
+    n: int = 16,
+    seed: int = 0,
+    noise_px: float = 0.15,
+    tilt_degrees: Tuple[float, float] = (12.0, 35.0),
+    roll_span_rad: float = np.pi,
+    roll_only: bool = False,
+    mispair: bool = False,
+) -> CalibrationSession:
+    """A capture with robot poses that satisfy the hand-eye constraint exactly.
+
+    The board poses are chosen first, so every view lands in frame, and the
+    robot poses are then *derived* from the constraint. Building it the other way
+    round produces board poses that are behind the camera or out of frame.
+
+    Args:
+        mounting: `"eye_in_hand"` or `"eye_to_hand"`.
+        n: Views to attempt.
+        seed: Random seed.
+        noise_px: Corner noise standard deviation.
+        tilt_degrees: Range of board tilt, which sets the rotation variety the
+            hand-eye solve depends on.
+        roll_span_rad: Range of board roll about the optical axis. Shrinking
+            both this and `tilt_degrees` is what produces a capture whose
+            relative rotations are too small to determine anything.
+        roll_only: Rotate the board only about the optical axis, which makes
+            every relative rotation axis parallel and the solve degenerate.
+        mispair: Shuffle the robot poses against the views, simulating an
+            ordering or timestamp-alignment mistake.
+
+    Returns:
+        A session carrying both the detections and the robot poses.
+    """
+    rng = np.random.default_rng(seed)
+    projector = projector_for(WIDE_PINHOLE)
+    robots, views = [], []
+    for index in range(n):
+        board = pose_for_view(
+            BOARD,
+            rng.uniform(500.0, 900.0),
+            tilt_rad=0.0 if roll_only else np.radians(rng.uniform(*tilt_degrees)),
+            tilt_axis_rad=0.0 if roll_only else rng.uniform(0.0, 2 * np.pi),
+            roll_rad=rng.uniform(-roll_span_rad, roll_span_rad),
+            offset_mm=rng.uniform(-60.0, 60.0, 2),
+        )
+        if mounting == "eye_in_hand":
+            robot = (
+                TRUE_BASE_TO_TARGET.compose(board.inverse())
+                .compose(TRUE_FLANGE_TO_CAMERA.inverse())
+            )
+        else:
+            robot = TRUE_FLANGE_TO_CAMERA.compose(board).compose(
+                TRUE_BASE_TO_TARGET.inverse()
+            )
+        points = projector.project(WIDE_PINHOLE, board, BOARD.object_points())
+        points = points + rng.normal(0.0, noise_px, points.shape)
+        keep = (
+            (points[:, 0] >= 0)
+            & (points[:, 0] < IMAGE_SIZE[0])
+            & (points[:, 1] >= 0)
+            & (points[:, 1] < IMAGE_SIZE[1])
+        )
+        if keep.sum() < 25:
+            continue
+        robots.append(robot)
+        views.append(
+            ViewObservations(
+                f"v{index:02d}", np.arange(BOARD.num_points)[keep], points[keep]
+            )
+        )
+    observations = ObservationSet(BOARD, IMAGE_SIZE, tuple(views))
+    order = list(range(len(robots)))
+    if mispair:
+        order = list(np.random.default_rng(7).permutation(len(robots)))
+    return CalibrationSession(
+        observations=observations,
+        robot=RobotPoses(tuple(robots[i] for i in order), observations.view_ids),
+    )

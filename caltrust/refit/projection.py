@@ -69,6 +69,63 @@ class Projector(ABC):
         """
 
     @abstractmethod
+    def normalise(self, camera: CameraModel, image_points: np.ndarray) -> np.ndarray:
+        """Undistort image points to normalised camera coordinates.
+
+        The inverse of projection down to an unknown depth: the result is the
+        direction `(x, y, 1)` each pixel looks along, with the intrinsics and the
+        distortion removed. Everything that measures a scene *back* from pixels
+        goes through here.
+
+        Args:
+            camera: The intrinsic model.
+            image_points: An `(n, 2)` array of pixel coordinates.
+
+        Returns:
+            An `(n, 2)` array of normalised coordinates.
+        """
+
+    def backproject(
+        self, camera: CameraModel, image_points: np.ndarray, depth_mm: float
+    ) -> np.ndarray:
+        """Lift image points onto a plane at a known depth.
+
+        Args:
+            camera: The intrinsic model.
+            image_points: An `(n, 2)` array of pixel coordinates.
+            depth_mm: Distance along the optical axis to the plane, in
+                millimetres.
+
+        Returns:
+            An `(n, 3)` array of camera-frame points in millimetres.
+
+        Raises:
+            ValidationError: The depth is not positive.
+        """
+        if not np.isfinite(depth_mm) or depth_mm <= 0:
+            raise ValidationError(f"depth must be positive, got {depth_mm}")
+        normalised = self.normalise(camera, image_points)
+        return np.column_stack([
+            normalised[:, 0] * depth_mm,
+            normalised[:, 1] * depth_mm,
+            np.full(normalised.shape[0], float(depth_mm)),
+        ])
+
+    def rays(self, camera: CameraModel, image_points: np.ndarray) -> np.ndarray:
+        """Unit direction vectors for image points, in the camera frame.
+
+        Args:
+            camera: The intrinsic model.
+            image_points: An `(n, 2)` array of pixel coordinates.
+
+        Returns:
+            An `(n, 3)` array of unit vectors.
+        """
+        normalised = self.normalise(camera, image_points)
+        directions = np.column_stack([normalised, np.ones(normalised.shape[0])])
+        return directions / np.linalg.norm(directions, axis=1, keepdims=True)
+
+    @abstractmethod
     def solve_pose(
         self, camera: CameraModel, object_points: np.ndarray, image_points: np.ndarray
     ) -> Pose:
@@ -212,6 +269,66 @@ class PinholeProjector(Projector):
             np.ascontiguousarray(jacobian[:, 0:6], dtype=float),
         )
 
+    def normalise(self, camera, image_points):
+        """Undistort through `cv2.undistortPoints`, then refine by Newton.
+
+        `cv2.undistortPoints` runs a fixed number of fixed-point iterations and
+        stops at roughly a micrometre of scene error at a metre of range. That is
+        small but not negligible against a sub-millimetre claim, and inverting
+        the distortion is cheap, so a couple of Newton steps take it to machine
+        precision. See `Projector.normalise`.
+        """
+        observed = np.asarray(image_points, dtype=np.float64).reshape(-1, 2)
+        points = np.ascontiguousarray(observed.reshape(-1, 1, 2))
+        estimate = cv2.undistortPoints(
+            points, camera.camera_matrix, camera.distortion
+        ).reshape(-1, 2)
+        return self._refine_normalised(camera, observed, estimate)
+
+    @staticmethod
+    def _refine_normalised(
+        camera: CameraModel,
+        observed: np.ndarray,
+        estimate: np.ndarray,
+        iterations: int = 3,
+        step: float = 1e-6,
+    ) -> np.ndarray:
+        """Newton-refine normalised coordinates so that re-projection matches."""
+        matrix, distortion = camera.camera_matrix, camera.distortion
+        identity_r = np.zeros(3)
+
+        def forward(normalised: np.ndarray) -> np.ndarray:
+            rays = np.column_stack([normalised, np.ones(normalised.shape[0])])
+            projected, _ = cv2.projectPoints(
+                np.ascontiguousarray(rays), identity_r, identity_r, matrix, distortion
+            )
+            return projected.reshape(-1, 2)
+
+        current = estimate.copy()
+        for _ in range(iterations):
+            residual = forward(current) - observed
+            if np.abs(residual).max() < 1e-12:
+                break
+            # A 2x2 numerical Jacobian per point; the distortion is smooth and
+            # the step is far above the noise floor of the projection.
+            shifted_x = current.copy()
+            shifted_x[:, 0] += step
+            shifted_y = current.copy()
+            shifted_y[:, 1] += step
+            base = forward(current)
+            d_x = (forward(shifted_x) - base) / step
+            d_y = (forward(shifted_y) - base) / step
+            determinant = d_x[:, 0] * d_y[:, 1] - d_x[:, 1] * d_y[:, 0]
+            usable = np.abs(determinant) > 1e-12
+            if not np.any(usable):
+                break
+            safe = np.where(usable, determinant, 1.0)
+            delta_x = (residual[:, 0] * d_y[:, 1] - residual[:, 1] * d_y[:, 0]) / safe
+            delta_y = (residual[:, 1] * d_x[:, 0] - residual[:, 0] * d_x[:, 1]) / safe
+            current[usable, 0] -= delta_x[usable]
+            current[usable, 1] -= delta_y[usable]
+        return current
+
     def solve_pose(self, camera, object_points, image_points):
         """Solve a pose with `cv2.solvePnP`, refined by Levenberg-Marquardt."""
         points = _as_object_points(object_points)
@@ -271,6 +388,25 @@ class FisheyeProjector(Projector):
             np.ascontiguousarray(jacobian[:, self._POSE_COLUMNS], dtype=float),
         )
 
+    def normalise(self, camera, image_points):
+        """Undistort through `cv2.fisheye.undistortPoints`, skew removed first.
+
+        `cv2.fisheye.undistortPoints` ignores `K[0, 1]`, so the skew is taken
+        out analytically beforehand. See `Projector.normalise`.
+        """
+        observed = np.asarray(image_points, dtype=np.float64).reshape(-1, 2)
+        deskewed = observed.copy()
+        deskewed[:, 0] -= (
+            camera.alpha * camera.fx * (observed[:, 1] - camera.cy) / camera.fy
+        )
+        skewless = camera.camera_matrix.copy()
+        skewless[0, 1] = 0.0
+        return cv2.fisheye.undistortPoints(
+            np.ascontiguousarray(deskewed.reshape(-1, 1, 2)),
+            skewless,
+            camera.distortion,
+        ).reshape(-1, 2)
+
     def solve_pose(self, camera, object_points, image_points):
         """Solve a pose by undistorting to normalised rays, then `cv2.solvePnP`.
 
@@ -285,15 +421,7 @@ class FisheyeProjector(Projector):
                 f"got {points.shape[0]}"
             )
         observed = np.asarray(image_points, dtype=np.float64).reshape(-1, 2)
-        # cv2.fisheye.undistortPoints ignores K[0, 1], so the skew is removed
-        # here rather than silently biasing the initial pose.
-        deskewed = observed.copy()
-        deskewed[:, 0] -= camera.alpha * camera.fx * (observed[:, 1] - camera.cy) / camera.fy
-        skewless = camera.camera_matrix.copy()
-        skewless[0, 1] = 0.0
-        normalised = cv2.fisheye.undistortPoints(
-            np.ascontiguousarray(deskewed.reshape(-1, 1, 2)), skewless, camera.distortion
-        )
+        normalised = self.normalise(camera, observed).reshape(-1, 1, 2)
         found, rvec, tvec = cv2.solvePnP(
             points.reshape(-1, 1, 3), normalised, np.eye(3), np.zeros(4),
             flags=cv2.SOLVEPNP_ITERATIVE,

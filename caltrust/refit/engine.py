@@ -98,7 +98,7 @@ def instrument(
         camera = session.prior.camera
         poses = _solve_poses(camera, observations)
 
-    block = _parameter_block(camera, options)
+    block = parameter_block(camera, options)
     equations, per_view = assemble(camera, poses, observations, block)
     covariance = covariance_from_normal_equations(equations, options.rcond)
     statistics = residuals_mod.summarise(
@@ -165,7 +165,20 @@ def _check_capacity(
         )
 
 
-def _parameter_block(camera: CameraModel, options: RefitOptions) -> ParameterBlock:
+def parameter_block(camera: CameraModel, options: RefitOptions) -> ParameterBlock:
+    """Which intrinsics a refit under these options estimates.
+
+    Public because anything mapping a covariance back onto a camera needs the
+    same reduction matrix the fit was made under, and reconstructing it by hand
+    would silently drift from what the engine actually did.
+
+    Args:
+        camera: The model whose parameters are being described.
+        options: The refit settings.
+
+    Returns:
+        A parameter block over the full intrinsic vector.
+    """
     fixed = set(options.fixed)
     if isinstance(camera, FisheyeKannalaBrandt):
         # OpenCV fixes skew unless explicitly told otherwise, and a skew
@@ -292,7 +305,7 @@ def _pinhole_flags(options: RefitOptions, has_guess: bool) -> int:
 
 def _fisheye_flags(options: RefitOptions, has_guess: bool) -> int:
     fixed = set(options.fixed)
-    # Skew is always fixed, matching _parameter_block, so the covariance is not
+    # Skew is always fixed, matching parameter_block, so the covariance is not
     # inflated by a parameter nobody estimated.
     flags = fisheye_flag("CALIB_RECOMPUTE_EXTRINSIC") | fisheye_flag("CALIB_FIX_SKEW")
     if options.check_condition:

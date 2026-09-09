@@ -5,10 +5,11 @@ the full parameter covariance, which parameter combinations your capture does
 not determine at all, where the residuals are structured rather than random, and
 how well posed the estimation problem actually was.
 
-Status: **M1 to M4 complete** — ingest, instrumented refit, out-of-sample error,
-and named-cause diagnostics. Task-space millimetres and staleness detection are
-not built yet. See [tracker.md](tracker.md) for the plan and
-[open-items.md](open-items.md) for everything known to be wrong or unverified.
+Status: **M1 to M7 complete** — ingest, instrumented refit, out-of-sample error,
+named-cause diagnostics, task-space millimetres, hand-eye with covariance, and
+the report. Staleness detection is not built yet. See [tracker.md](tracker.md)
+for the plan and [open-items.md](open-items.md) for the twenty-eight things known
+to be wrong, missing, or resting on an unchecked assumption.
 
 ---
 
@@ -141,6 +142,28 @@ Then ask what is wrong with the capture:
 `diagnose` refits, cross-validates and runs every check. It exits 3 on a critical
 finding, so a CI step can gate on calibration quality without parsing the report.
 
+And finally, the whole thing in one command:
+
+    caltrust report session.npz \
+        --task length:800mm:100mm \
+        --pdf audit.pdf --json audit.json \
+        --camera-name "line-3 inspection" --contact metrology@example.com
+
+    A 100 mm feature measured at 800 mm has an expected error of 0.107 mm, with a
+    95% interval of +/-0.272 mm.
+
+    The reported 0.1221 px reprojection error is an honest error estimate:
+    held-out views reprojected to 0.1231 px, a ratio of 1.01x.
+
+    The dominant cause is image coverage: corners occupy 33% of an 8x6 grid, 8%
+    of the border ring, and reach 41% of the way to the frame corner; the
+    distortion coefficients are extrapolating over most of the frame.
+
+That is the paragraph from the problem statement, produced from measured data.
+The JSON carries every number behind it; the PDF is the version a quality
+manager can sign, leading with that statement and ending with an open question
+and a contact address.
+
 `caltrust show`, `caltrust formats` and `--help` cover the rest.
 
 ---
@@ -268,6 +291,85 @@ residual that oscillates in sign, so the primary criterion is a chi-square over
 the bands (Wilson-Hilferty to a z-score, no special-function dependency) and the
 slope only describes the shape.
 
+## What M5 propagates
+
+Monte Carlo from the covariance into task units. Whole parameter sets are drawn
+from the joint distribution rather than one deviation at a time, because the
+trade-offs between parameters are what determine the answer — sampling `fx` and
+`tz` independently from their marginals would give a spread far wider than
+reality, since the two are correlated at 0.93 and their errors partly cancel.
+
+Four tasks: a length at a known depth, a plane's distance and orientation, a
+stereo triangulation, and a point carried into the robot base frame through a
+hand-eye transform.
+
+**The variance split was not in the plan and is the most useful part.** The
+calibration and the pixel noise at measurement time are independent, so their
+variances add, and separating them answers the question that follows every error
+figure:
+
+    a 100 mm feature measured at 800 mm has an expected error of 0.253 mm,
+    with a 95% interval of +/-0.622 mm
+        of that, 38% comes from the calibration and 62% from 0.203 px of
+        pixel noise
+
+Re-calibrating that camera can improve the answer by at most a third. On a
+degenerate capture the same task reports 111 mm, flagged as a lower bound
+because an unconstrained direction carries no variance to sample along.
+
+## What M6 solves
+
+Eye-in-hand and eye-to-hand, with a covariance over all twelve parameters and
+pose-set sufficiency diagnostics. The closed-form initialisation is implemented
+here rather than delegated, because `cv2.calibrateHandEye` is absent from
+OpenCV 5's Python bindings while its `CALIB_HAND_EYE_*` flags are still
+exported.
+
+Two things measurement caught that reasoning would not have.
+
+**The obvious covariance is 3.1x optimistic.** A residual-based estimate gave a
+translation deviation of 0.39 mm against an actual error of 1.29 mm. It treats
+the target-in-camera poses as exact data when they come from the calibration,
+and their errors are *correlated across views* because every view shares the
+same intrinsics — a focal-length error tilts and scales all of them coherently,
+so it does not average down. Resampling whole calibrations gives 1.22 mm, and
+that is the default.
+
+**Hand-eye is determined by rotation and by nothing else**, which is why the
+sufficiency checks matter. Every degenerate pose set produces a small predicted
+deviation next to a large actual error:
+
+| pose set | true error | predicted sd | caught by |
+|---|---|---|---|
+| varied axes | 2.2 mm | 1.5 mm | (clean) |
+| mispaired robot poses | **367 mm** | 1.9 mm | pose pairing |
+| one rotation axis | **88 mm** | 1.5 mm | rotation axes, conditioning |
+| tiny wrist rotations | — | — | the solve refuses outright |
+
+The pairing check is the one worth having: conjugate rotations have equal
+angles, so a robot pose shuffled against its image is detectable, and no amount
+of optimisation would have revealed it.
+
+## What M7 writes
+
+One run, two outputs. The JSON has every number; the PDF has the subset a person
+has to sign. The PDF writer is about 350 lines of this package rather than a
+dependency, because three runtime dependencies is what makes the single binary
+possible and a PDF of text, rules and bars needs nothing that is not already
+here — the format is plain bytes, the base-14 fonts need no embedding, and
+`zlib` is in the standard library.
+
+The last sentence of the report is a forecast:
+
+    Adding 6 views tilted about 40 degrees in varied directions would make the
+    calibration identifiable, bringing the interval to approximately +/-0.98 mm
+    from a figure that is currently only a lower bound.
+
+That is answerable because uncertainty depends on the geometry of a capture and
+on the corner noise, not on the true parameter values — so the recommended views
+are synthesised from the calibration already in hand, refitted, and
+re-propagated. It predicts uncertainty, not correctness, and says so.
+
 ## Verification
 
 Every numeric claim has a test that could fail.
@@ -289,30 +391,62 @@ Every numeric claim has a test that could fail.
 | Each diagnostic is specific | six single-fault rigs x each cause | every fault fires, every unrelated cause stays quiet |
 | Clustering by view deflates the z-score | naive per-corner vs cluster-robust on a healthy rig | asserted lower, measured 6.3 -> 1.6 |
 | The omnibus test catches oscillation | synthetic profile orthogonal to constant and linear | slope t = 0, flatness z > 5 |
+| Sampling reproduces the joint distribution | 4000 draws vs the predicted deviations and correlations | sd within 12%, correlation within 0.08 |
+| Backprojection is exact | project then normalise, over the whole frame | 3e-13 mm at 800 mm, both models |
+| Each task measures its own scene | noiseless round trip, four tasks | exact to 1e-6 |
+| The variance split adds up | combined vs parameters + noise | within 20% |
+| Hand-eye recovers known truth | both mountings, derived robot poses | under 6 mm and 1 deg |
+| The resampled hand-eye covariance covers the error | truth vs predicted deviation | 1.29 mm actual, 1.22 mm predicted |
+| Every degenerate pose set is caught | four hand-eye rigs | all flagged or refused |
+| The PDF is a valid PDF | streams decompressed and searched; Quartz rasterises it | headline and contact present |
+| Helvetica metrics are right | hand-checked against the AFM table | exact |
 
-    772 passed, 10 skipped in 80s        # make test
-    TOTAL  3722 statements, 90 missed, 98%
+    943 passed, 11 skipped in 183s       # make test
+    TOTAL  5191 statements, 153 missed, 97%
 
-The ten skips are OpenCV-4-only flag-namespace checks. `make test` runs
-everything; `make fast` skips the Monte Carlo and image-rendering tests.
+The skips are OpenCV-4-only flag-namespace checks. `make test` runs everything;
+`make fast` skips the Monte Carlo, image-rendering and propagation tests.
+
+Reports are reproducible to about 1e-6 relative rather than bit-exact, because
+`cv2.calibrateCamera` reduces across threads and floating-point addition is not
+associative — eight identical refits spanned 1.1e-12 px on a ten-thread machine.
+`--deterministic` pins OpenCV to one thread and makes output byte-identical.
 
 ---
 
 ## Using it as a library
 
+    from caltrust import load_session
+    from caltrust.report import run_audit, write_json, write_pdf
+    from caltrust.task import LengthAtDepth
+
+    session = load_session("session.npz")
+    audit = run_audit(session, tasks=[LengthAtDepth(depth_mm=800.0, length_mm=100.0)])
+
+    print(audit.trustworthy)                    # read this first
+    for sentence in audit.headline():
+        print(sentence)
+    write_pdf(audit, "audit.pdf")
+    write_json(audit, "audit.json")
+
+Or a piece at a time:
+
     from caltrust import cross_validate, diagnose, instrument, session_from_images
     from caltrust.cli.targets import resolve_target
+    from caltrust.handeye import diagnose_hand_eye, solve_hand_eye
+    from caltrust.task import LengthAtDepth, propagate
 
     session = session_from_images("captures/", resolve_target("checkerboard:9x6:25mm"))
     fit = instrument(session)
     validation = cross_validate(session)
     findings = diagnose(fit, session.observations, validation)
+    error = propagate(fit, LengthAtDepth(depth_mm=800.0, length_mm=100.0))
 
     print(fit.conditioning.identifiable)                       # read this first
     print(validation.ratio, validation.spread_of("fx"))
     print(findings.verdict())
-    for finding in findings.critical:
-        print(finding.cause, finding.summary, finding.metrics)
+    print(error.distribution("length_mm").statement())
+    print(error.variance_share("length_mm"))                   # calibration vs pixels
 
     print(fit.covariance.correlation_with_poses("fx")[:, 5])   # corr(fx, tz) per view
     print(fit.covariance.dense())                              # if you want it all
@@ -352,7 +486,7 @@ right one on OpenCV 5. Every flag resolves through `caltrust.refit.cv_compat`,
 and the test suite checks the resolved values against the fisheye namespace
 wherever it exists.
 
-Two OpenCV behaviours worth knowing, both found while building this and both
+Three OpenCV behaviours worth knowing, all found while building this and all
 documented where they bite:
 
 - `cv2.fisheye.calibrate` estimates its own starting intrinsics when not given
@@ -364,6 +498,10 @@ documented where they bite:
   the coefficient on the fisheye path. Either way the parameter leaves the
   covariance, so the reported uncertainty is right; only the resulting value
   differs.
+- `cv2.calibrateHandEye` is gone from OpenCV 5's Python bindings, while its
+  `CALIB_HAND_EYE_*` flags are still exported. The closed form is implemented in
+  this package instead, and cross-checked against OpenCV wherever OpenCV still
+  has it.
 
 ---
 

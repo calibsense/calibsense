@@ -8,7 +8,7 @@ Ordered by how much each one threatens the product's headline claim — a
 defensible statement of measurement error in millimetres — not by how hard it is
 to fix.
 
-Last reviewed at the end of M4.
+Last reviewed at the end of M7.
 
 ---
 
@@ -53,14 +53,60 @@ of the board is the fuller answer and needs the native solver from item 6.
 
 ### 3. Extrinsic covariance lives in a chart, not the tangent space
 
-`Cov([rx, ry, rz, tx, ty, tz])` is fine to report but wrong to propagate. The
-rotation-vector parameterisation is a chart, and for large rotations it is
-distorted, so pushing this covariance through a task-space Jacobian will be
-subtly wrong. M4's task-space translation needs the pose covariance in the local
-`se(3)` tangent space at the current pose, which means the right-Jacobian of the
-exponential map. Not implemented.
+`Cov([rx, ry, rz, tx, ty, tz])` is fine to report but only locally valid to
+propagate. The rotation-vector parameterisation is a chart, and for large
+rotations it is distorted.
+
+Partly addressed since M4. The hand-eye solve updates both transforms by
+right-multiplied increments, which is the well-behaved chart, and its
+covariance is expressed in that frame. But `task.sampling.CovarianceSampler`
+still perturbs the calibration's per-view poses *additively* in rotation-vector
+coordinates, which is consistent with the linearisation the covariance came from
+and therefore correct to first order, and wrong in the tail for a view at a
+large rotation. A view at 150 degrees of board roll is where this would first
+show up.
+
+### 3b. Three inputs are treated as exact, and two of them usually dominate
+
+Each is stated in the task description that relies on it, and each is a real
+limitation rather than an oversight:
+
+| Input | Where | Why it is not modelled |
+|---|---|---|
+| Stereo baseline | `StereoTriangulation` | caltrust does not do stereo calibration, so there is no covariance for it. For a real rig the baseline's own uncertainty usually dominates the triangulated depth. |
+| Robot flange pose | `CameraToBase` | Robot repeatability is a specification of the arm. Inventing a number would be worse than saying so, but a cell integrator has that number and there is nowhere to put it. |
+| Board geometry | everywhere | See item 2. |
+
+The flange pose is the easiest to fix: accept a repeatability figure and sample
+it. Doing so would also let the task report a three-way variance split rather
+than the current two.
+
+### 3c. The variance split lumps hand-eye in with the calibration
+
+`TaskResult.variance_share` returns two numbers, and for `CameraToBase` the
+first covers both the camera calibration and the hand-eye transform. For a robot
+cell the interesting question is which of those two to spend money on, and the
+report cannot currently answer it. A third run with only the hand-eye varying
+would, at the cost of a fourth of the runtime.
 
 ---
+
+### 3d. The hand-eye residual covariance is optimistic, and still reachable
+
+Measured against known truth: the residual-based covariance gave a translation
+deviation of 0.39 mm against an actual error of 1.29 mm, a factor of 3.1. The
+cause is that it treats the target-in-camera poses as exact data when they come
+from the calibration, and their errors are correlated across views because every
+view shares the same intrinsics — a focal-length error tilts and scales all of
+them coherently, so it does not average down.
+
+`solve_hand_eye` now defaults to `monte_carlo=True`, which resamples whole
+calibrations and lands at 1.22 mm. The residual path remains available for
+speed and is labelled optimistic wherever it is reported, but nothing stops a
+caller quoting it.
+
+The same correlation problem almost certainly affects the *calibration*
+covariance in the other direction, and that is item 1.
 
 ## Tier 2 — machinery that exists but cannot be reached
 
@@ -185,6 +231,50 @@ normalises to gripper-to-base and aligns to views, ready for
 
 ---
 
+## Performance, and what it costs the report
+
+### 20. The hand-eye Monte Carlo is slow because its Jacobian is numerical
+
+`_jacobian` evaluates the residual set twenty-four times per Gauss-Newton step,
+and the resampled covariance does three steps per sample. At 200 samples over 16
+views that is about seven seconds. The analytic Jacobian needs the adjoint of
+four composed transforms per view; it was left numerical on purpose, because the
+analytic form is easy to get subtly wrong and the test suite could not have
+caught a sign error in it as cleanly. Worth doing once there is a reference to
+check it against.
+
+### 21. `PlaneLocation` dominates a report's runtime
+
+It solves a pose per sample, three times per sample for the variance
+decomposition, so 1500 samples take about 1.3 seconds against 0.06 for
+`LengthAtDepth`. A full report with three tasks is a few seconds; a report with
+several plane tasks at high sample counts is not.
+
+### 22. Reports are reproducible to about 1e-6 relative, not bit-exact
+
+`cv2.calibrateCamera` reduces across threads and floating-point addition is not
+associative, so eight identical refits produced eight different focal lengths
+spanning 1.1e-12 px on a ten-thread machine. `--deterministic` pins OpenCV to
+one thread and makes output byte-identical, at a cost in speed. The PDF footer
+states the situation rather than claiming exact reproducibility.
+
+## Known limitations of the PDF writer
+
+### 23. Only CP1252 characters render
+
+The base-14 fonts are used without embedding, which is what keeps the
+dependency count at three. Anything outside CP1252 — a Greek letter in a camera
+name, a CJK character in a plant name — becomes `?`. Fixing it means embedding a
+TrueType font, which means either a data file in the package or a dependency,
+and both were traded away deliberately.
+
+### 24. The only chart is a horizontal bar
+
+Enough for the variance split, which is the one place a picture helps. A radial
+residual profile would be better shown as a plot than as the table it currently
+is, and the writer has the primitives for it (rules and filled rectangles) but
+no line-plot helper.
+
 ## Known limitations of the test infrastructure
 
 ### 18. The renderer introduces its own sub-pixel bias
@@ -199,6 +289,17 @@ be used to validate sub-0.05 px effects.
 
 *Fix:* render at higher resolution and downsample, or compute the distorted
 sample positions in one composed map instead of two.
+
+### 25. The forecast is not validated against an actually-captured improvement
+
+`test_the_forecast_makes_a_degenerate_capture_identifiable` checks that the
+forecast says the right *direction* and that the extended capture really is
+identifiable. What is not checked is calibration: if the forecast says the
+interval will fall to +/-0.35 mm, nobody has confirmed that capturing those
+views really produces +/-0.35 mm. The check is possible — generate the extra
+views from the *truth* camera rather than the fitted one, refit, and compare —
+and it is the one claim in the report that is a prediction rather than a
+measurement.
 
 ### 19. Cross-validation is not tested against a known out-of-sample truth
 

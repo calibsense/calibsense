@@ -17,8 +17,8 @@ Everything in this repo exists to make that paragraph true and checkable.
 | 1 | Reprojection RMS is an in-sample fit statistic | **M3 — held-out reprojection error** |
 | 2 | No usable uncertainty on the parameters | **M2 — full covariance, not marginal stddevs** |
 | 3 | No diagnosis of the cause | **M4 — the named-cause diagnostic set** |
-| 4 | No translation into task space | M5 — mm at a working distance |
-| 5 | No staleness detection | M7 — drift monitor |
+| 4 | No translation into task space | **M5 — mm at a working distance** |
+| 5 | No staleness detection | M8 — drift monitor |
 
 ---
 
@@ -26,17 +26,19 @@ Everything in this repo exists to make that paragraph true and checkable.
 
 | M | Scope | State |
 |---|---|---|
-| **M1** | **Ingest** — images + target (checkerboard / ChArUco / circle grid), or existing calibration + detections. Pinhole/Brown-Conrady and fisheye/Kannala-Brandt. Optional robot poses for hand-eye. | in progress |
-| **M2** | **Refit with instrumentation** — full parameter covariance, per-view residual distributions, per-corner residuals, condition number of the normal equations, parameter correlation matrix. | in progress |
+| **M1** | **Ingest** — images + target (checkerboard / ChArUco / circle grid), or existing calibration + detections. Pinhole/Brown-Conrady and fisheye/Kannala-Brandt. Optional robot poses for hand-eye. | **done** |
+| **M2** | **Refit with instrumentation** — full parameter covariance, per-view residual distributions, per-corner residuals, condition number of the normal equations, parameter correlation matrix. | **done** |
 | **M3** | **Out-of-sample error** — K-fold over views, in-sample and held-out RMS and the ratio between them. | **done** |
 | **M4** | **Degeneracy and coverage diagnostics** — one named cause each for pose diversity, depth variation, frontoparallel dominance, image coverage, target scale, distortion model adequacy and per-view leverage. | **done** |
-| M5 | Task-space translation (mm at working distance) | not started |
-| M6 | Report generation, one command | not started |
-| M7 | Staleness / drift detection | not started |
+| **M5** | **Task-space error propagation** — Monte Carlo from the covariance into millimetres, for a length at depth, a plane, a stereo triangulation, and a point carried into the robot base frame. | **done** |
+| **M6** | **Hand-eye with covariance** — camera-to-flange and camera-to-base, with pose-set sufficiency diagnostics. | **done** |
+| **M7** | **Report** — one run, a JSON with every number and a PDF that leads with the task-space statement and ends with an open question. | **done** |
+| M8 | Staleness / drift detection | not started |
 
-M1 through M4 are complete: 772 tests at 98% statement coverage, running both as
-a pip install (three transitive dependencies) and as a PyInstaller binary with
-no Python present.
+M1 through M7 are complete: 943 tests at 97% statement coverage, running both as
+a pip install (three transitive dependencies) and as a PyInstaller binary with no
+Python present. `caltrust report` produces the paragraph from section 1.8 from
+measured data.
 
 Everything known to be wrong, missing, or resting on an unchecked assumption is
 in [open-items.md](open-items.md) — nineteen items, ranked by how much each one
@@ -212,3 +214,87 @@ diagnostic originally recommended "capture at 1030 mm and 2578 mm" on a rig whos
 true distance was 800 mm — because the fitted depths scale with the wrong focal
 length. The *ratio* survives that rescale, so the finding stands; the absolute
 millimetres are now withheld whenever the fit is not identifiable.
+
+
+---
+
+## M5 — Task-space error propagation · task list
+
+- [x] Joint sampling from the covariance, intrinsics and poses together, so the trade-offs between parameters carry through instead of being lost to independent marginals
+- [x] Eigen-factorisation rather than Cholesky, because a fit that is not identifiable has no Cholesky factor
+- [x] Exact backprojection: a Newton refinement on top of `cv2.undistortPoints`, which stops at about 7 micrometres of scene error at a metre
+- [x] `LengthAtDepth`, `PlaneLocation`, `StereoTriangulation`, `CameraToBase`
+- [x] Three runs per task, so the error splits into what a better calibration would fix and what it would not
+- [x] `bounded` carried on every result, and every statement says "lower bound" when it is false
+
+### What the split turned out to be worth
+
+The variance decomposition was not in the plan and is the most useful thing in
+M5. On a well-conditioned capture measuring a 100 mm feature at 800 mm, the
+0.25 mm expected error is 38% calibration and 62% pixel noise — so re-calibrating
+that camera can improve the answer by at most a third, and the report says so
+instead of implying the calibration is the whole story.
+
+## M6 — Hand-eye with covariance · task list
+
+- [x] Eye-in-hand and eye-to-hand, both refined by Gauss-Newton with right-multiplied SE(3) updates
+- [x] Closed-form initialisation implemented here, because `cv2.calibrateHandEye` is absent from OpenCV 5's Python bindings while its `CALIB_HAND_EYE_*` flags are still exported
+- [x] Separate rotational and translational residual scales, estimated from the residuals, since the two carry different units
+- [x] Covariance over all twelve parameters, with both a residual-based and a resampled estimate
+- [x] Pose-set sufficiency: rotation axis spread, rotation magnitude, conditioning, and pose pairing
+
+### Two things measurement caught that reasoning would not have
+
+**The residual covariance is 3.1x optimistic.** Against known truth it gave a
+translation deviation of 0.39 mm for an actual error of 1.29 mm. The cause is
+that it treats the target-in-camera poses as exact data when they come from the
+calibration, and their errors are *correlated across views* because every view
+shares the same intrinsics — a focal-length error tilts and scales all of them
+coherently, so it does not average down. Resampling whole calibrations gives
+1.22 mm, and that is now the default.
+
+**The eye-to-hand closed form returned the wrong transform of the two.**
+Eliminating the constant between two views leaves the camera transform in the
+middle for eye-in-hand and the *target* transform for eye-to-hand. Assigning it
+to the camera either way produced a pose 630 mm and 180 degrees from the truth,
+with small residuals and a confident-looking covariance. Only a rig with a
+clean, known truth for both transforms caught it.
+
+The sufficiency diagnostics matter for the same reason. Every degenerate pose
+set produces a small predicted deviation next to a large actual error:
+
+| pose set | true error | predicted sd | caught by |
+|---|---|---|---|
+| varied axes | 2.2 mm | 1.5 mm | (clean) |
+| mispaired robot poses | **367 mm** | 1.9 mm | pose pairing |
+| one rotation axis | **88 mm** | 1.5 mm | rotation axes, conditioning |
+| tiny wrist rotations | — | — | the solve refuses outright |
+
+## M7 — Report · task list
+
+- [x] `run_audit`: one call for refit, cross-validation, diagnosis, propagation, forecast and hand-eye
+- [x] JSON with every number, so a dashboard never parses prose
+- [x] PDF leading with the task-space statement and ending with an open question and a contact
+- [x] A minimal PDF writer, so the dependency count stays at three
+- [x] The forecast, which is the last sentence of section 1.8
+- [x] `--deterministic`, because OpenCV's threaded reduction makes output differ in the last few bits
+
+### The PDF writer is written, not depended on
+
+Three runtime dependencies is what makes the single binary possible, and a PDF
+of text, rules and bars needs nothing that is not already present: the format is
+plain bytes, the base-14 fonts need no embedding, and `zlib` is in the standard
+library. It is about 350 lines including the Adobe Helvetica advance widths,
+which is what makes wrapping and right-alignment come out right. The trade is
+that only CP1252 characters render.
+
+### The forecast, and what it does not claim
+
+Uncertainty depends on the geometry of a capture and on the corner noise, not on
+the true parameter values, so synthesising the recommended views from the
+calibration already in hand and refitting gives a sound prediction of the
+interval. On the frontoparallel rig it turns "unbounded" into +/-0.98 mm.
+
+It does not predict correctness. The synthetic views agree with the current fit
+by construction, so the forecast says how much *tighter* the interval would get,
+not that the answer would be right. Every forecast carries that sentence.

@@ -358,3 +358,112 @@ def test_diagnose_writes_a_fit_bundle(tmp_path, session_file, capsys):
 def test_diagnose_on_a_missing_session_is_a_clean_input_error(tmp_path, capsys):
     assert main(["diagnose", str(tmp_path / "absent.npz")]) == EXIT_INPUT
     assert "no such file" in capsys.readouterr().err
+
+
+@pytest.mark.slow
+def test_report_writes_both_outputs(tmp_path, session_file, capsys):
+    pdf = tmp_path / "report.pdf"
+    js = tmp_path / "report.json"
+    code = main([
+        "report", str(session_file), "--pdf", str(pdf), "--json", str(js),
+        "--task", "length:800mm:100mm", "--samples", "300",
+        "--camera-name", "line-3", "--contact", "me@example.com",
+    ])
+    out = capsys.readouterr().out
+    assert code in (EXIT_OK, EXIT_FINDINGS)
+    assert "expected error" in out
+    assert "me@example.com" in out
+    assert pdf.read_bytes()[:8] == b"%PDF-1.4"
+    payload = json.loads(js.read_text())
+    assert payload["metadata"]["camera_name"] == "line-3"
+    assert payload["metadata"]["contact"] == "me@example.com"
+    assert payload["tasks"][0]["task"]["depth_mm"] == 800.0
+
+
+@pytest.mark.slow
+def test_report_uses_a_default_task_when_none_is_named(tmp_path, session_file, capsys):
+    js = tmp_path / "report.json"
+    main(["report", str(session_file), "--json", str(js), "--samples", "300"])
+    capsys.readouterr()
+    payload = json.loads(js.read_text())
+    assert len(payload["tasks"]) == 1
+    assert payload["tasks"][0]["task"]["kind"] == "length_at_depth"
+
+
+@pytest.mark.slow
+def test_report_accepts_several_tasks(tmp_path, session_file, capsys):
+    js = tmp_path / "report.json"
+    main([
+        "report", str(session_file), "--json", str(js), "--samples", "250",
+        "--task", "length:800mm:100mm", "--task", "plane:800mm:25deg",
+        "--task", "stereo:800mm:200mm",
+    ])
+    capsys.readouterr()
+    kinds = [t["task"]["kind"] for t in json.loads(js.read_text())["tasks"]]
+    assert kinds == ["length_at_depth", "plane_location", "stereo_triangulation"]
+
+
+@pytest.mark.slow
+def test_report_with_no_output_paths_says_so(session_file, capsys):
+    assert main(["report", str(session_file), "--samples", "200"]) in (
+        EXIT_OK, EXIT_FINDINGS
+    )
+    assert "nothing written" in capsys.readouterr().err
+
+
+@pytest.mark.slow
+def test_report_is_reproducible_from_a_seed(tmp_path, session_file, capsys):
+    """Reproducible to a tolerance, because OpenCV reduces across threads.
+
+    Floating-point addition is not associative, so `cv2.calibrateCamera` returns
+    answers differing in the last few bits between runs. `--deterministic` pins
+    it to one thread; without that, a tolerance is the honest assertion.
+    """
+    values = []
+    for index in range(2):
+        js = tmp_path / f"r{index}.json"
+        main(["report", str(session_file), "--json", str(js), "--samples", "300",
+              "--seed", "11", "--task", "length:800mm:100mm"])
+        capsys.readouterr()
+        values.append(json.loads(js.read_text())["tasks"][0]["quantities"][0])
+    first, second = values
+    assert first["expected_error"] == pytest.approx(second["expected_error"], rel=1e-6)
+    assert first["half_width"] == pytest.approx(second["half_width"], rel=1e-6)
+
+
+@pytest.mark.slow
+def test_deterministic_makes_a_report_byte_identical(tmp_path, session_file, capsys):
+    digests = []
+    for index in range(2):
+        js = tmp_path / f"d{index}.json"
+        main(["--deterministic", "report", str(session_file), "--json", str(js),
+              "--samples", "250", "--seed", "3", "--task", "length:800mm:100mm"])
+        capsys.readouterr()
+        payload = json.loads(js.read_text())
+        # The timestamp is the one field that legitimately differs.
+        payload["metadata"].pop("created")
+        digests.append(json.dumps(payload, sort_keys=True))
+    assert digests[0] == digests[1]
+
+
+def test_report_rejects_a_base_task_without_robot_poses(tmp_path, session_file, capsys):
+    assert main([
+        "report", str(session_file), "--task", "base:800mm", "--samples", "100"
+    ]) == EXIT_INPUT
+    assert "needs a hand-eye solve" in capsys.readouterr().err
+
+
+def test_report_on_a_missing_session_is_a_clean_input_error(tmp_path, capsys):
+    assert main(["report", str(tmp_path / "absent.npz")]) == EXIT_INPUT
+    assert "no such file" in capsys.readouterr().err
+
+
+def test_report_rejects_a_bad_task_shorthand(session_file, capsys):
+    assert main(["report", str(session_file), "--task", "nope:1"]) == EXIT_INPUT
+    assert "unknown task kind" in capsys.readouterr().err
+
+
+def test_help_mentions_the_task_shorthand(capsys):
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "task shorthand" in capsys.readouterr().out

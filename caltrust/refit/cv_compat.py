@@ -74,3 +74,24 @@ def pinhole_flag(name: str) -> int:
         )
     _cache[name] = int(value)
     return _cache[name]
+
+
+def set_single_threaded(enabled: bool = True) -> int:
+    """Make OpenCV's arithmetic bit-reproducible, at the cost of speed.
+
+    `cv2.calibrateCamera` reduces across threads, and floating-point addition is
+    not associative, so the same inputs give answers that differ in the last few
+    bits from run to run. Measured on a ten-thread machine, eight identical
+    refits produced eight different focal lengths spanning 1.1e-12 px — harmless
+    for any conclusion, and enough to make a byte-comparison of two reports
+    fail. Pinning OpenCV to one thread removes it entirely.
+
+    Args:
+        enabled: Pin to one thread, or restore OpenCV's own default.
+
+    Returns:
+        The thread count in effect before the call, so a caller can restore it.
+    """
+    previous = cv2.getNumThreads()
+    cv2.setNumThreads(1 if enabled else 0)
+    return previous
