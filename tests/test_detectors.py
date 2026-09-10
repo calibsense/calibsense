@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -26,22 +26,22 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.target import CharucoBoard, Checkerboard, CircleGrid
-from caltrust.errors import DetectionError, ValidationError
-from caltrust.ingest.detectors import (
+from calibsense.core.target import CharucoBoard, Checkerboard, CircleGrid
+from calibsense.errors import DetectionError, ValidationError
+from calibsense.ingest.detectors import (
     CharucoDetector,
     CheckerboardDetector,
     DetectorOptions,
     detector_for,
     registered_detectors,
 )
-from caltrust.ingest.detectors.opencv_support import (
+from calibsense.ingest.detectors.opencv_support import (
     aruco_dictionary,
     image_size_of,
     to_gray,
 )
-from caltrust.refit.projection import projector_for
-from caltrust.synthetic import pose_for_view
+from calibsense.refit.projection import projector_for
+from calibsense.synthetic import pose_for_view
 
 from .rendering import render_view
 
@@ -288,7 +288,7 @@ def test_an_opencv_error_in_the_sb_detector_falls_through(pinhole, monkeypatch):
 
 
 def test_refine_corners_shrinks_its_window_near_an_edge():
-    from caltrust.ingest.detectors.opencv_support import refine_corners
+    from calibsense.ingest.detectors.opencv_support import refine_corners
 
     gray = np.zeros((40, 40), np.uint8)
     gray[20:, 20:] = 255

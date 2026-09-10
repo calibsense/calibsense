@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,11 +16,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.session import CalibrationSession
-from caltrust.errors import RefitError, ValidationError
-from caltrust.refit import RefitOptions, instrument
-from caltrust.synthetic import diverse_poses, frontoparallel_poses, synthesise
-from caltrust.validate import (
+from calibsense.core.session import CalibrationSession
+from calibsense.errors import RefitError, ValidationError
+from calibsense.refit import RefitOptions, instrument
+from calibsense.synthetic import diverse_poses, frontoparallel_poses, synthesise
+from calibsense.validate import (
     DEFAULT_FOLDS,
     MIN_TRAIN_VIEWS,
     CrossValidation,
@@ -204,7 +204,7 @@ def test_predicted_spread_is_reported_alongside_the_fold_spread(pinhole, checker
 
 
 def test_a_fixed_parameter_has_no_predicted_spread(good_capture, pinhole):
-    from caltrust.core.session import CalibrationRecord
+    from calibsense.core.session import CalibrationRecord
 
     session = CalibrationSession(
         observations=good_capture.observations,
@@ -248,8 +248,8 @@ def test_evaluate_held_out_is_exact_without_noise(pinhole, checkerboard):
 def test_evaluate_held_out_refuses_a_view_too_thin_for_a_pose(
     pinhole, checkerboard
 ):
-    from caltrust.core.observations import ObservationSet, ViewObservations
-    from caltrust.refit.projection import projector_for
+    from calibsense.core.observations import ObservationSet, ViewObservations
+    from calibsense.refit.projection import projector_for
 
     pose = diverse_poses(checkerboard, 1, seed=0)[0]
     ids = np.arange(3)

@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -22,8 +22,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.errors import ValidationError
-from caltrust.handeye import (
+from calibsense.errors import ValidationError
+from calibsense.handeye import (
     MIN_VIEWS,
     MOUNTINGS,
     HandEyeResult,
@@ -32,9 +32,9 @@ from caltrust.handeye import (
     relative_motions,
     solve_hand_eye,
 )
-from caltrust.handeye.solve import residual
-from caltrust.diagnose import Severity
-from caltrust.refit import instrument
+from calibsense.handeye.solve import residual
+from calibsense.diagnose import Severity
+from calibsense.refit import instrument
 
 from . import rigs
 
@@ -206,7 +206,7 @@ def test_relative_motions_pair_robot_and_camera():
 
 def test_relative_motions_refuse_a_pure_translation():
     """Hand-eye is determined by rotation and by nothing else."""
-    from caltrust.core.poses import Pose
+    from calibsense.core.poses import Pose
 
     robots = [Pose(np.eye(3), [i * 50.0, 0.0, 0.0]) for i in range(6)]
     boards = [Pose(np.eye(3), [0.0, 0.0, 800.0 + i]) for i in range(6)]
@@ -223,7 +223,7 @@ def test_an_unknown_mounting_is_rejected(mounting):
 
 
 def test_a_session_without_robot_poses_is_rejected():
-    from caltrust.core.session import CalibrationSession
+    from calibsense.core.session import CalibrationSession
 
     capture = rigs.healthy()
     session = CalibrationSession(observations=capture.observations)

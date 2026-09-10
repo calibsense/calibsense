@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,8 +16,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.errors import ValidationError
-from caltrust.task.sampling import (
+from calibsense.errors import ValidationError
+from calibsense.task.sampling import (
     CovarianceSampler,
     ParameterSample,
     factorise,
@@ -129,8 +129,8 @@ def test_samples_are_deterministic_for_a_seed():
 
 
 def test_fixed_parameters_never_move():
-    from caltrust.core.session import CalibrationRecord, CalibrationSession
-    from caltrust.refit import RefitOptions, instrument
+    from calibsense.core.session import CalibrationRecord, CalibrationSession
+    from calibsense.refit import RefitOptions, instrument
 
     capture = rigs.healthy()
     session = CalibrationSession(
@@ -144,8 +144,8 @@ def test_fixed_parameters_never_move():
 
 
 def test_a_tied_aspect_ratio_moves_both_focal_lengths_together():
-    from caltrust.core.session import CalibrationRecord, CalibrationSession
-    from caltrust.refit import RefitOptions, instrument
+    from calibsense.core.session import CalibrationRecord, CalibrationSession
+    from calibsense.refit import RefitOptions, instrument
 
     capture = rigs.healthy()
     session = CalibrationSession(
@@ -173,8 +173,8 @@ def test_marginal_std_matches_the_covariance_diagonal():
 
 
 def test_hand_eye_is_sampled_when_supplied():
-    from caltrust.handeye import solve_hand_eye
-    from caltrust.refit import instrument
+    from calibsense.handeye import solve_hand_eye
+    from calibsense.refit import instrument
 
     session = rigs.hand_eye_session("eye_in_hand")
     fit = instrument(session)

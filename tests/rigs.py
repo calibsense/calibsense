@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -22,15 +22,15 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from caltrust.core.camera import CameraModel, FisheyeKannalaBrandt, PinholeBrownConrady
-from caltrust.core.observations import ObservationSet, ViewObservations
-from caltrust.core.poses import Pose
-from caltrust.core.session import CalibrationSession, RobotPoses
-from caltrust.core.target import Checkerboard
-from caltrust.diagnose.base import DiagnosticContext
-from caltrust.refit import RefitOptions, instrument
-from caltrust.refit.projection import projector_for
-from caltrust.synthetic import pose_for_view, synthesise
+from calibsense.core.camera import CameraModel, FisheyeKannalaBrandt, PinholeBrownConrady
+from calibsense.core.observations import ObservationSet, ViewObservations
+from calibsense.core.poses import Pose
+from calibsense.core.session import CalibrationSession, RobotPoses
+from calibsense.core.target import Checkerboard
+from calibsense.diagnose.base import DiagnosticContext
+from calibsense.refit import RefitOptions, instrument
+from calibsense.refit.projection import projector_for
+from calibsense.synthetic import pose_for_view, synthesise
 
 IMAGE_SIZE = (1280, 720)
 NOISE_PX = 0.2

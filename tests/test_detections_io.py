@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -18,9 +18,9 @@ import json
 import numpy as np
 import pytest
 
-from caltrust.core.target import Checkerboard
-from caltrust.errors import UnsupportedFormatError, ValidationError
-from caltrust.ingest.detections import read_detections, write_detections
+from calibsense.core.target import Checkerboard
+from calibsense.errors import UnsupportedFormatError, ValidationError
+from calibsense.ingest.detections import read_detections, write_detections
 
 
 def test_json_round_trip(good_capture, tmp_path):

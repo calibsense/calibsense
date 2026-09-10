@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,9 +16,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.errors import ValidationError
-from caltrust.refit import instrument
-from caltrust.task import (
+from calibsense.errors import ValidationError
+from calibsense.refit import instrument
+from calibsense.task import (
     CameraToBase,
     LengthAtDepth,
     MeasurementDistribution,
@@ -28,8 +28,8 @@ from caltrust.task import (
     propagate,
     propagate_all,
 )
-from caltrust.task.sampling import ParameterSample
-from caltrust.task.tasks import _closest_approach
+from calibsense.task.sampling import ParameterSample
+from calibsense.task.tasks import _closest_approach
 
 from . import rigs
 
@@ -226,7 +226,7 @@ def test_a_degenerate_fit_reports_a_lower_bound():
 
 
 def test_bounded_is_not_merely_the_numerical_rank():
-    from caltrust.task.sampling import CovarianceSampler
+    from calibsense.task.sampling import CovarianceSampler
 
     sampler = CovarianceSampler(rigs.frontoparallel().fit, seed=0)
     assert not sampler.bounded
@@ -341,7 +341,7 @@ def test_a_single_sample_has_no_deviation():
 # --------------------------------------------------------------------------
 
 def test_camera_to_base_recovers_the_true_base_position():
-    from caltrust.handeye import solve_hand_eye
+    from calibsense.handeye import solve_hand_eye
 
     session = rigs.hand_eye_session("eye_in_hand")
     fit = instrument(session)
@@ -356,7 +356,7 @@ def test_camera_to_base_recovers_the_true_base_position():
 
 
 def test_camera_to_base_includes_the_hand_eye_uncertainty():
-    from caltrust.handeye import solve_hand_eye
+    from calibsense.handeye import solve_hand_eye
 
     session = rigs.hand_eye_session("eye_in_hand")
     fit = instrument(session)
@@ -370,7 +370,7 @@ def test_camera_to_base_includes_the_hand_eye_uncertainty():
 
 
 def test_eye_in_hand_needs_a_flange_pose():
-    from caltrust.handeye import solve_hand_eye
+    from calibsense.handeye import solve_hand_eye
 
     session = rigs.hand_eye_session("eye_in_hand")
     fit = instrument(session)
@@ -380,7 +380,7 @@ def test_eye_in_hand_needs_a_flange_pose():
 
 
 def test_eye_to_hand_needs_no_flange_pose():
-    from caltrust.handeye import solve_hand_eye
+    from calibsense.handeye import solve_hand_eye
 
     session = rigs.hand_eye_session("eye_to_hand")
     fit = instrument(session)
@@ -393,7 +393,7 @@ def test_eye_to_hand_needs_no_flange_pose():
 
 
 def test_camera_to_base_says_the_flange_pose_is_exact():
-    from caltrust.handeye import solve_hand_eye
+    from calibsense.handeye import solve_hand_eye
 
     session = rigs.hand_eye_session("eye_to_hand")
     fit = instrument(session)

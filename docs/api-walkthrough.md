@@ -1,4 +1,4 @@
-# caltrust, end to end
+# calibsense, end to end
 
 What each API call does, in the order you would call them. Every number in the
 examples is real output from `docs/../examples`, run against a 16-view capture of
@@ -55,9 +55,9 @@ chain carries that flag forward (`sampler.bounded`, `validation.trustworthy`,
 Five calls do everything.
 
 ```python
-from caltrust import session_from_images, instrument, cross_validate, diagnose
-from caltrust.cli.targets import resolve_target
-from caltrust.task import LengthAtDepth, propagate
+from calibsense import session_from_images, instrument, cross_validate, diagnose
+from calibsense.cli.targets import resolve_target
+from calibsense.task import LengthAtDepth, propagate
 
 session    = session_from_images("captures/", resolve_target("checkerboard:9x6:25mm"))
 fit        = instrument(session)
@@ -69,7 +69,7 @@ error      = propagate(fit, LengthAtDepth(depth_mm=800.0, length_mm=100.0))
 Or one call, if you want the report rather than the pieces:
 
 ```python
-from caltrust.report import run_audit, write_pdf, write_json
+from calibsense.report import run_audit, write_pdf, write_json
 
 audit = run_audit(session, tasks=[LengthAtDepth(800.0, 100.0)])
 write_pdf(audit, "audit.pdf")
@@ -109,8 +109,8 @@ session_from_calibration(
 **Targets.** Build them directly or from shorthand:
 
 ```python
-from caltrust import Checkerboard, CharucoBoard, CircleGrid
-from caltrust.cli.targets import resolve_target
+from calibsense import Checkerboard, CharucoBoard, CircleGrid
+from calibsense.cli.targets import resolve_target
 
 Checkerboard(columns=9, rows=6, square_size=25.0, units="mm")
 CharucoBoard(squares_x=8, squares_y=11, square_size=20.0, marker_size=15.0)
@@ -171,7 +171,7 @@ instrument(session, options: RefitOptions = None) -> InstrumentedFit
 
 > **One asymmetry to know.** `fixed=("k2",)` holds `k2` at its supplied value on
 > the pinhole path and sets it to **zero** on the fisheye path. That is OpenCV's
-> behaviour, not caltrust's. Either way the parameter leaves the covariance, so
+> behaviour, not calibsense's. Either way the parameter leaves the covariance, so
 > the reported uncertainty is right; only the resulting value differs.
 
 ### Reading the result
@@ -336,13 +336,13 @@ would give a spread far wider than reality, since the two correlate at 0.93 and
 their errors partly cancel in most tasks.
 
 `observation_noise_px` defaults to the fit's own residual sigma, which is the
-corner noise caltrust measured on this camera. Pass `0.0` to isolate the
+corner noise calibsense measured on this camera. Pass `0.0` to isolate the
 calibration.
 
 ### The four tasks
 
 ```python
-from caltrust.task import LengthAtDepth, PlaneLocation, StereoTriangulation, CameraToBase
+from calibsense.task import LengthAtDepth, PlaneLocation, StereoTriangulation, CameraToBase
 
 LengthAtDepth(depth_mm=800.0, length_mm=100.0,
               centre_mm=(0.0, 0.0), orientation_deg=0.0)
@@ -355,7 +355,7 @@ PlaneLocation(depth_mm=800.0, tilt_deg=25.0, extent_mm=200.0, grid=(5, 5))
 #    plane without tilting it, a principal-point error tilts it without moving it.
 
 StereoTriangulation(baseline_mm=200.0, depth_mm=800.0, lateral_mm=(0.0, 0.0))
-# -> depth_mm, range_mm.  The baseline is treated as EXACT: caltrust did not
+# -> depth_mm, range_mm.  The baseline is treated as EXACT: calibsense did not
 #    measure it, and for a real rig its own uncertainty usually dominates.
 
 CameraToBase(hand_eye_result=result, depth_mm=800.0, flange=pose)
@@ -394,7 +394,7 @@ error.summary_lines()
 > no more.
 
 `CovarianceSampler(fit, view_indices, seed, hand_eye)` is exposed if you want the
-parameter draws for something caltrust does not model. `sampler.bounded` is the
+parameter draws for something calibsense does not model. `sampler.bounded` is the
 flag to check.
 
 ---
@@ -530,8 +530,8 @@ thirty or more frames without touching either, and look at how much the
 detected corners move.
 
 ```python
-from caltrust import measure_noise_floor
-from caltrust.ingest import detect_in_images, find_images
+from calibsense import measure_noise_floor
+from calibsense.ingest import detect_in_images, find_images
 
 observations = detect_in_images(find_images("static/"), target)
 floor = measure_noise_floor(observations)
@@ -541,7 +541,7 @@ sigma = floor.sigma_for_propagation()
 ```
 
 ```
-caltrust noise-floor --images static/ --target checkerboard:9x6:25mm
+calibsense noise-floor --images static/ --target checkerboard:9x6:25mm
 ```
 
 Three numbers matter, in this order.
@@ -594,7 +594,7 @@ The measured figure is only worth having if it can reach the millimetres, so
 both `propagate` and `run_audit` take it, and the CLI carries it too:
 
 ```
-caltrust report session.npz --pdf report.pdf --noise-px 0.026
+calibsense report session.npz --pdf report.pdf --noise-px 0.026
 ```
 
 It moves the pixel-noise half of the task-space error and leaves the calibration
@@ -609,19 +609,19 @@ motion and not detector noise, and it says so rather than returning a number.
 
 | command | equivalent |
 |---|---|
-| `caltrust ingest images --images D --target T -o s.npz` | `save_session(session_from_images(D, T), "s.npz")` |
-| `caltrust ingest calibration --calibration C --detections D -o s.npz` | `session_from_calibration(C, D)` |
-| `caltrust refit s.npz` | `instrument(load_session("s.npz"))` |
-| `caltrust refit s.npz --cross-validate` | `+ cross_validate(session)` |
-| `caltrust diagnose s.npz` | `+ diagnose(fit, obs, validation)` |
-| `caltrust report s.npz --pdf p --json j` | `run_audit(...)` then `write_pdf` / `write_json` |
-| `caltrust noise-floor --images D --target T` | `measure_noise_floor(detect_in_images(...))` |
-| `caltrust show s.npz` | `render_session` / `render_fit` |
-| `caltrust formats` | `registered_targets`, `reader_names`, ... |
+| `calibsense ingest images --images D --target T -o s.npz` | `save_session(session_from_images(D, T), "s.npz")` |
+| `calibsense ingest calibration --calibration C --detections D -o s.npz` | `session_from_calibration(C, D)` |
+| `calibsense refit s.npz` | `instrument(load_session("s.npz"))` |
+| `calibsense refit s.npz --cross-validate` | `+ cross_validate(session)` |
+| `calibsense diagnose s.npz` | `+ diagnose(fit, obs, validation)` |
+| `calibsense report s.npz --pdf p --json j` | `run_audit(...)` then `write_pdf` / `write_json` |
+| `calibsense noise-floor --images D --target T` | `measure_noise_floor(detect_in_images(...))` |
+| `calibsense show s.npz` | `render_session` / `render_fit` |
+| `calibsense formats` | `registered_targets`, `reader_names`, ... |
 
-`caltrust diagnose` and `caltrust report` exit **3** on a critical finding, so a
+`calibsense diagnose` and `calibsense report` exit **3** on a critical finding, so a
 CI step can gate on calibration quality without parsing the report.
-`caltrust noise-floor` exits **3** when the measured noise is correlated enough
+`calibsense noise-floor` exits **3** when the measured noise is correlated enough
 that the classical covariance should not be trusted.
 
 `--deterministic` pins OpenCV to one thread. Without it, output differs in the
@@ -667,7 +667,7 @@ Known gaps, unchecked assumptions and things measured to be wrong live in
 
 ---
 
-caltrust is licensed **AGPL-3.0-only**. Section 13 reaches network use: modify it
+calibsense is licensed **AGPL-3.0-only**. Section 13 reaches network use: modify it
 and let people interact with the result over a network, and you owe them the
 source. See [LICENSE](../LICENSE) and the licence notes in
 [README.md](../README.md).

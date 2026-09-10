@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -13,7 +13,7 @@
 
 If the renderer is wrong, every detector test is wrong in the same direction and
 none of them notice. The check that matters is that the projection model the
-renderer paints with agrees with the projection model caltrust computes: render
+renderer paints with agrees with the projection model calibsense computes: render
 the board, detect it, and confirm the corners land where `projectPoints` says.
 """
 
@@ -22,9 +22,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.target import CharucoBoard, Checkerboard, CircleGrid
-from caltrust.refit.projection import projector_for
-from caltrust.synthetic import pose_for_view
+from calibsense.core.target import CharucoBoard, Checkerboard, CircleGrid
+from calibsense.refit.projection import projector_for
+from calibsense.synthetic import pose_for_view
 
 from .rendering import BOARD_MARGIN_MM, board_texture, pattern_extent, render_view
 
@@ -72,7 +72,7 @@ def test_an_unsupported_target_has_no_texture_renderer():
     """A subclass of a known board still renders; a genuinely new one must not."""
     from dataclasses import dataclass
 
-    from caltrust.core.target import TargetSpec
+    from calibsense.core.target import TargetSpec
 
     @dataclass(frozen=True)
     class Dartboard(TargetSpec):
@@ -99,8 +99,8 @@ def test_an_unsupported_target_has_no_texture_renderer():
 
 
 def test_rendered_corners_agree_with_the_projection_model(pinhole):
-    """The renderer's geometry and caltrust's projector must be the same model."""
-    from caltrust.ingest.detectors import detector_for
+    """The renderer's geometry and calibsense's projector must be the same model."""
+    from calibsense.ingest.detectors import detector_for
 
     target = CircleGrid(4, 11, 20.0, True)
     pose = pose_for_view(target, 650.0, tilt_rad=0.3, tilt_axis_rad=0.9, roll_rad=0.2)
@@ -114,7 +114,7 @@ def test_rendered_corners_agree_with_the_projection_model(pinhole):
 
 
 def test_blur_and_noise_change_the_image_without_breaking_detection(pinhole):
-    from caltrust.ingest.detectors import detector_for
+    from calibsense.ingest.detectors import detector_for
 
     target = Checkerboard(9, 6, 25.0)
     pose = pose_for_view(target, 700.0, tilt_rad=0.25)
@@ -164,9 +164,9 @@ def test_the_renderers_own_bias_dominates_a_fit_but_not_a_static_capture(pinhole
     If this ever fails because the fit's sigma tracks the sensor noise, the
     renderer's bias has been fixed and item 18 can be closed.
     """
-    from caltrust import instrument, measure_noise_floor
-    from caltrust.ingest import detect_in_images, find_images, session_from_images
-    from caltrust.synthetic import diverse_poses
+    from calibsense import instrument, measure_noise_floor
+    from calibsense.ingest import detect_in_images, find_images, session_from_images
+    from calibsense.synthetic import diverse_poses
 
     from .rendering import write_static_capture, write_views
 

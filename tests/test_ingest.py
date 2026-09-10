@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -19,9 +19,9 @@ import cv2
 import numpy as np
 import pytest
 
-from caltrust.core.target import Checkerboard
-from caltrust.errors import IngestError, UnsupportedFormatError
-from caltrust.ingest import (
+from calibsense.core.target import Checkerboard
+from calibsense.errors import IngestError, UnsupportedFormatError
+from calibsense.ingest import (
     DetectorOptions,
     detect_in_images,
     find_images,
@@ -30,8 +30,8 @@ from caltrust.ingest import (
     session_from_images,
     write_detections,
 )
-from caltrust.ingest.images import IMAGE_SUFFIXES, view_id_for
-from caltrust.synthetic import diverse_poses
+from calibsense.ingest.images import IMAGE_SUFFIXES, view_id_for
+from calibsense.synthetic import diverse_poses
 
 from .rendering import write_views
 
@@ -161,7 +161,7 @@ def test_a_capture_with_no_detections_is_an_error(tmp_path):
 
 
 def test_session_from_images_recovers_truth(capture_directory, pinhole):
-    from caltrust.refit import instrument
+    from calibsense.refit import instrument
 
     session = session_from_images(str(capture_directory), TARGET)
     assert session.observations.n_views == 10
@@ -231,7 +231,7 @@ def test_session_from_calibration_needs_matching_image_sizes(
 def test_session_from_images_attaches_robot_poses(capture_directory, tmp_path):
     import json
 
-    from caltrust.core.poses import Pose
+    from calibsense.core.poses import Pose
 
     first = session_from_images(str(capture_directory), TARGET)
     poses = [

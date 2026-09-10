@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -24,13 +24,13 @@ import dataclasses
 import numpy as np
 import pytest
 
-from caltrust.diagnose import Severity, diagnose
-from caltrust.diagnose.noise import (
+from calibsense.diagnose import Severity, diagnose
+from calibsense.diagnose.noise import (
     INFLATION_CRITICAL,
     INFLATION_WARNING,
     NoiseModelValidity,
 )
-from caltrust.refit.covariance import MIN_CLUSTERS_FOR_ROBUST
+from calibsense.refit.covariance import MIN_CLUSTERS_FOR_ROBUST
 
 from . import rigs
 

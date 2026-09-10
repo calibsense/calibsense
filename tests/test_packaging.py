@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -25,9 +25,9 @@ import sys
 
 import pytest
 
-import caltrust
+import calibsense
 
-ROOT = pathlib.Path(caltrust.__file__).resolve().parent
+ROOT = pathlib.Path(calibsense.__file__).resolve().parent
 REPO = ROOT.parent
 
 
@@ -44,24 +44,24 @@ def test_entry_point_imports_absolutely():
         if isinstance(node, ast.ImportFrom) and node.level > 0
     ]
     assert not relative, (
-        "caltrust/__main__.py must use absolute imports; found "
+        "calibsense/__main__.py must use absolute imports; found "
         f"{[node.module for node in relative]}"
     )
 
 
 def test_python_dash_m_runs_the_cli():
     result = subprocess.run(
-        [sys.executable, "-m", "caltrust", "--version"],
+        [sys.executable, "-m", "calibsense", "--version"],
         capture_output=True, text=True, cwd=str(REPO),
     )
     assert result.returncode == 0, result.stderr
-    assert caltrust.__version__ in result.stdout
+    assert calibsense.__version__ in result.stdout
 
 
 def test_version_is_declared_once():
-    """`pyproject.toml` and `caltrust._version` must not drift apart."""
+    """`pyproject.toml` and `calibsense._version` must not drift apart."""
     pyproject = (REPO / "pyproject.toml").read_text()
-    assert f'version = "{caltrust.__version__}"' in pyproject
+    assert f'version = "{calibsense.__version__}"' in pyproject
 
 
 def test_runtime_dependencies_stay_at_three():
@@ -114,16 +114,16 @@ def test_every_module_is_reachable_by_a_static_import():
             continue
         relative = path.relative_to(ROOT).with_suffix("")
         parts = [p for p in relative.parts if p != "__init__"]
-        importlib.import_module(".".join(["caltrust", *parts]))
+        importlib.import_module(".".join(["calibsense", *parts]))
 
 
 @pytest.mark.skipif(
-    not (REPO / "dist" / "caltrust").exists(),
+    not (REPO / "dist" / "calibsense").exists(),
     reason="no frozen binary built; run `make binary` first",
 )
 @pytest.mark.slow
 def test_the_frozen_binary_starts_in_a_bare_environment():
-    binary = REPO / "dist" / "caltrust"
+    binary = REPO / "dist" / "calibsense"
     result = subprocess.run(
         [str(binary), "formats"],
         capture_output=True, text=True,
@@ -150,7 +150,7 @@ def test_the_diagnostic_registry_is_a_literal_not_a_scan():
 
 
 def test_every_diagnostic_in_the_registry_is_statically_imported():
-    from caltrust.diagnose.report import DIAGNOSTICS
+    from calibsense.diagnose.report import DIAGNOSTICS
 
     source = (ROOT / "diagnose" / "report.py").read_text()
     for cls in DIAGNOSTICS:
@@ -186,7 +186,7 @@ def test_pyproject_declares_the_same_licence():
 def test_every_source_file_carries_the_spdx_header():
     """A licence nobody can find in the file they are reading is not much use."""
     missing = []
-    for root in ("caltrust", "tests", "examples"):
+    for root in ("calibsense", "tests", "examples"):
         base = REPO / root
         if not base.exists():
             continue
@@ -200,19 +200,19 @@ def test_every_source_file_carries_the_spdx_header():
 
 
 def test_the_pyinstaller_spec_carries_it_too():
-    head = (REPO / "packaging" / "caltrust.spec").read_text()[:800]
+    head = (REPO / "packaging" / "calibsense.spec").read_text()[:800]
     assert "SPDX-License-Identifier: AGPL-3.0-only" in head
 
 
 def test_the_header_sits_above_the_docstring_not_instead_of_it():
     """Comments before a docstring are fine; replacing it would break pdoc."""
-    import caltrust
-    import caltrust.refit.covariance
-    import caltrust.report.pdf
-    import caltrust.task.tasks
+    import calibsense
+    import calibsense.refit.covariance
+    import calibsense.report.pdf
+    import calibsense.task.tasks
 
-    for module in (caltrust, caltrust.refit.covariance, caltrust.report.pdf,
-                   caltrust.task.tasks):
+    for module in (calibsense, calibsense.refit.covariance, calibsense.report.pdf,
+                   calibsense.task.tasks):
         assert module.__doc__, f"{module.__name__} lost its docstring"
         assert "SPDX" not in module.__doc__, f"{module.__name__} header ate the docstring"
 
@@ -220,7 +220,7 @@ def test_the_header_sits_above_the_docstring_not_instead_of_it():
 def test_the_version_flag_states_the_licence():
     """The AGPL asks an interactive program to say so."""
     result = subprocess.run(
-        [sys.executable, "-m", "caltrust", "--version"],
+        [sys.executable, "-m", "calibsense", "--version"],
         capture_output=True, text=True, cwd=str(REPO),
     )
     assert result.returncode == 0

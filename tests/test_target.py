@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -17,14 +17,14 @@ import cv2
 import numpy as np
 import pytest
 
-from caltrust.core.target import (
+from calibsense.core.target import (
     CharucoBoard,
     Checkerboard,
     CircleGrid,
     registered_targets,
     target_from_dict,
 )
-from caltrust.errors import ValidationError
+from calibsense.errors import ValidationError
 
 
 def test_checkerboard_points_are_row_major_and_planar():

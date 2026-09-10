@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-from caltrust.cli.tasks import ALIASES, SHORTHAND_HELP, parse_task, parse_tasks
-from caltrust.errors import ValidationError
-from caltrust.task.tasks import LengthAtDepth, PlaneLocation, StereoTriangulation
+from calibsense.cli.tasks import ALIASES, SHORTHAND_HELP, parse_task, parse_tasks
+from calibsense.errors import ValidationError
+from calibsense.task.tasks import LengthAtDepth, PlaneLocation, StereoTriangulation
 
 
 @pytest.mark.parametrize(
@@ -84,8 +84,8 @@ def test_several_tasks_parse_in_order():
 
 @pytest.mark.slow
 def test_a_base_task_parses_with_a_hand_eye_result():
-    from caltrust.handeye import solve_hand_eye
-    from caltrust.refit import instrument
+    from calibsense.handeye import solve_hand_eye
+    from calibsense.refit import instrument
 
     from . import rigs
 

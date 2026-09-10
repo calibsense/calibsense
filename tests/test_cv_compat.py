@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -21,8 +21,8 @@ from __future__ import annotations
 import cv2
 import pytest
 
-from caltrust.errors import RefitError
-from caltrust.refit.cv_compat import fisheye_flag, pinhole_flag
+from calibsense.errors import RefitError
+from calibsense.refit.cv_compat import fisheye_flag, pinhole_flag
 
 FISHEYE_NAMES = (
     "CALIB_USE_INTRINSIC_GUESS",

@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,15 +16,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.camera import PinholeBrownConrady
-from caltrust.core.poses import Pose
-from caltrust.core.session import (
+from calibsense.core.camera import PinholeBrownConrady
+from calibsense.core.poses import Pose
+from calibsense.core.session import (
     HAND_EYE_CONVENTIONS,
     CalibrationRecord,
     CalibrationSession,
     RobotPoses,
 )
-from caltrust.errors import ValidationError
+from calibsense.errors import ValidationError
 
 
 def robot_poses(view_ids, convention="gripper2base"):
@@ -99,7 +99,7 @@ def test_a_missing_robot_pose_is_reported_at_ingest(tiny_observations):
 
 def test_session_fills_in_a_timestamp(good_session):
     assert good_session.created.endswith("+00:00")
-    assert good_session.caltrust_version
+    assert good_session.calibsense_version
 
 
 def test_session_rejects_a_prior_for_a_different_image_size(good_capture, pinhole):

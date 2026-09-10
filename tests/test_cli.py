@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -20,16 +20,16 @@ import cv2
 import numpy as np
 import pytest
 
-from caltrust.cli.main import (
+from calibsense.cli.main import (
     EXIT_FINDINGS,
     EXIT_INPUT,
     EXIT_OK,
     build_parser,
     main,
 )
-from caltrust.core.target import Checkerboard
-from caltrust.io import load_fit, load_session
-from caltrust.synthetic import diverse_poses
+from calibsense.core.target import Checkerboard
+from calibsense.io import load_fit, load_session
+from calibsense.synthetic import diverse_poses
 
 from .rendering import write_views
 
@@ -75,7 +75,7 @@ def test_version_flag_exits_cleanly(capsys):
     with pytest.raises(SystemExit) as exit_info:
         main(["--version"])
     assert exit_info.value.code == 0
-    assert "caltrust" in capsys.readouterr().out
+    assert "calibsense" in capsys.readouterr().out
 
 
 def test_bare_invocation_prints_help(capsys):
@@ -102,7 +102,7 @@ def test_ingest_images_writes_a_session(tmp_path, images, capsys):
     assert main(["ingest", "images", "--images", str(images), "--target", TARGET,
                  "-o", str(path), "--quiet"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "caltrust session" in out
+    assert "calibsense session" in out
     assert "9x6 checkerboard" in out
     assert os.path.isfile(path)
     session = load_session(str(path))
@@ -129,7 +129,7 @@ def test_ingest_images_with_a_calibration(tmp_path, images, calibration_file, ca
 
 @pytest.mark.slow
 def test_ingest_calibration_from_detections(tmp_path, session_file, calibration_file, capsys):
-    from caltrust.ingest import write_detections
+    from calibsense.ingest import write_detections
 
     session = load_session(str(session_file))
     detections = write_detections(session.observations, str(tmp_path / "d.json"))
@@ -144,7 +144,7 @@ def test_ingest_calibration_from_detections(tmp_path, session_file, calibration_
 def test_refit_prints_the_report(session_file, capsys):
     assert main(["refit", str(session_file)]) == EXIT_OK
     out = capsys.readouterr().out
-    for heading in ("caltrust instrumented refit", "conditioning", "parameters",
+    for heading in ("calibsense instrumented refit", "conditioning", "parameters",
                     "residuals by view", "residuals by image radius"):
         assert heading in out
     assert "corr(fx, tz)" in out
@@ -226,7 +226,7 @@ def test_refit_no_refit_audits_the_shipped_calibration(
 @pytest.mark.slow
 def test_show_renders_a_session_and_a_fit(tmp_path, session_file, capsys):
     assert main(["show", str(session_file)]) == EXIT_OK
-    assert "caltrust session" in capsys.readouterr().out
+    assert "calibsense session" in capsys.readouterr().out
     fit = tmp_path / "fit.npz"
     main(["refit", str(session_file), "-o", str(fit)])
     capsys.readouterr()
@@ -319,7 +319,7 @@ def test_cross_validation_survives_a_save_and_load(tmp_path, session_file, capsy
 def test_diagnose_prints_findings(session_file, capsys):
     code = main(["diagnose", str(session_file)])
     out = capsys.readouterr().out
-    assert "caltrust diagnosis" in out
+    assert "calibsense diagnosis" in out
     assert "Image coverage" in out or "clean:" in out
     assert code in (EXIT_OK, EXIT_FINDINGS)
 
@@ -355,7 +355,7 @@ def test_diagnose_all_lists_the_clean_diagnostics_too(session_file, capsys):
 def test_diagnose_verbose_includes_the_refit_report(session_file, capsys):
     main(["diagnose", str(session_file), "-v"])
     out = capsys.readouterr().out
-    assert "instrumented refit" in out and "caltrust diagnosis" in out
+    assert "instrumented refit" in out and "calibsense diagnosis" in out
 
 
 @pytest.mark.slow
@@ -486,7 +486,7 @@ def test_help_mentions_the_task_shorthand(capsys):
 @pytest.fixture
 def static_images(tmp_path, pinhole):
     """Forty frames of one pose, differing only by sensor noise."""
-    from caltrust.synthetic import pose_for_view
+    from calibsense.synthetic import pose_for_view
 
     from .rendering import write_static_capture
 

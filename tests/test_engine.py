@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,13 +16,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.camera import FisheyeKannalaBrandt, PinholeBrownConrady
-from caltrust.core.observations import ObservationSet, ViewObservations
-from caltrust.core.session import CalibrationRecord, CalibrationSession
-from caltrust.errors import RefitError, ValidationError
-from caltrust.refit import RefitOptions, instrument
-from caltrust.refit.result import OPTIMUM_DECREMENT_TOLERANCE
-from caltrust.synthetic import diverse_poses, synthesise
+from calibsense.core.camera import FisheyeKannalaBrandt, PinholeBrownConrady
+from calibsense.core.observations import ObservationSet, ViewObservations
+from calibsense.core.session import CalibrationRecord, CalibrationSession
+from calibsense.errors import RefitError, ValidationError
+from calibsense.refit import RefitOptions, instrument
+from calibsense.refit.result import OPTIMUM_DECREMENT_TOLERANCE
+from calibsense.synthetic import diverse_poses, synthesise
 
 
 def z_scores(fit, truth):
@@ -209,7 +209,7 @@ def test_ignoring_the_prior_still_converges(session_with_prior, pinhole):
 
 def test_a_view_with_too_few_points_is_refused(pinhole, checkerboard):
     projector_points = checkerboard.object_points([0, 1, 2])
-    from caltrust.refit.projection import projector_for
+    from calibsense.refit.projection import projector_for
 
     pose = diverse_poses(checkerboard, 1, seed=0)[0]
     thin = ViewObservations(
@@ -225,7 +225,7 @@ def test_a_view_with_too_few_points_is_refused(pinhole, checkerboard):
 
 
 def test_too_little_data_for_any_uncertainty_is_refused(pinhole, checkerboard):
-    from caltrust.refit.projection import projector_for
+    from calibsense.refit.projection import projector_for
 
     pose = diverse_poses(checkerboard, 1, seed=0)[0]
     ids = np.arange(7)
@@ -317,7 +317,7 @@ def test_radial_bins_option_is_honoured(good_session):
 def test_fit_records_its_provenance(good_session):
     fit = instrument(good_session)
     assert fit.created.endswith("+00:00")
-    assert fit.caltrust_version
+    assert fit.calibsense_version
     assert fit.image_size == (1280, 720)
 
 
@@ -459,7 +459,7 @@ def test_a_pinhole_optimiser_failure_is_reported_cleanly(monkeypatch, good_sessi
 def test_a_pose_that_cannot_be_solved_names_the_view(monkeypatch, session_with_prior):
     import cv2
 
-    from caltrust.refit.projection import PinholeProjector
+    from calibsense.refit.projection import PinholeProjector
 
     def always_fail(self, *args, **kwargs):
         raise cv2.error("solvePnP exploded")

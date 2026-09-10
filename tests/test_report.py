@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -19,10 +19,10 @@ import zlib
 import numpy as np
 import pytest
 
-from caltrust.core.session import CalibrationSession
-from caltrust.errors import SerializationError, ValidationError
-from caltrust.refit import RefitOptions, instrument
-from caltrust.report import (
+from calibsense.core.session import CalibrationSession
+from calibsense.errors import SerializationError, ValidationError
+from calibsense.refit import RefitOptions, instrument
+from calibsense.report import (
     DEFAULT_CONTACT,
     DEFAULT_OPEN_QUESTION,
     A4,
@@ -41,8 +41,8 @@ from caltrust.report import (
     write_json,
     write_pdf,
 )
-from caltrust.report.pdf import FONTS, escape
-from caltrust.task import LengthAtDepth, PlaneLocation, propagate
+from calibsense.report.pdf import FONTS, escape
+from calibsense.task import LengthAtDepth, PlaneLocation, propagate
 
 from . import rigs
 
@@ -296,7 +296,7 @@ def test_the_caveats_reach_the_json_and_both_renderers(correlated_audit):
 @pytest.mark.slow
 def test_a_banner_line_fits_the_pdf_content_width(correlated_audit, degenerate_audit):
     """The banner is one line by design, so it must not silently overflow."""
-    from caltrust.report.pdf import A4, text_width
+    from calibsense.report.pdf import A4, text_width
 
     available = A4[0] - 2 * 56.0
     for audit in (correlated_audit, degenerate_audit):
@@ -358,7 +358,7 @@ def test_report_metadata_fills_in_defaults():
     assert metadata.created.endswith("+00:00")
     assert metadata.contact == DEFAULT_CONTACT
     assert metadata.open_question == DEFAULT_OPEN_QUESTION
-    assert "caltrust_version" in metadata.to_dict()
+    assert "calibsense_version" in metadata.to_dict()
 
 
 # --------------------------------------------------------------------------
@@ -388,7 +388,7 @@ def test_the_forecast_says_it_predicts_uncertainty_not_correctness(degenerate_au
 
 def test_recommendations_put_tilt_before_depth():
     """Measured: depth variation alone does not make a focal length knowable."""
-    from caltrust.diagnose import diagnose
+    from calibsense.diagnose import diagnose
 
     capture = rigs.frontoparallel()
     diagnosis = diagnose(capture.fit, capture.observations)
@@ -398,7 +398,7 @@ def test_recommendations_put_tilt_before_depth():
 
 
 def test_a_depth_problem_recommends_distances():
-    from caltrust.diagnose import diagnose
+    from calibsense.diagnose import diagnose
 
     capture = rigs.single_depth()
     diagnosis = diagnose(capture.fit, capture.observations)
@@ -408,8 +408,8 @@ def test_a_depth_problem_recommends_distances():
 
 
 def test_no_recommendation_when_nothing_needs_fixing():
-    from caltrust.diagnose.base import Finding, Severity
-    from caltrust.diagnose.report import Diagnosis
+    from calibsense.diagnose.base import Finding, Severity
+    from calibsense.diagnose.report import Diagnosis
 
     clean = Diagnosis((Finding("pose_diversity", "Pose diversity", Severity.OK, "fine"),))
     assert recommend(clean, [800.0, 900.0]) is None
@@ -417,8 +417,8 @@ def test_no_recommendation_when_nothing_needs_fixing():
 
 @pytest.mark.slow
 def test_the_forecast_reports_no_gain_on_an_already_good_capture():
-    from caltrust.diagnose import diagnose
-    from caltrust.report.forecast import forecast as run_forecast
+    from calibsense.diagnose import diagnose
+    from calibsense.report.forecast import forecast as run_forecast
 
     capture = rigs.healthy()
     session = CalibrationSession(observations=capture.observations)

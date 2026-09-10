@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from caltrust import CalibrationSession, PinholeBrownConrady, Checkerboard, instrument
-from caltrust.synthetic import pose_for_view, synthesise
+from calibsense import CalibrationSession, PinholeBrownConrady, Checkerboard, instrument
+from calibsense.synthetic import pose_for_view, synthesise
 
 TRUTH = PinholeBrownConrady(900.0, 905.0, 639.5, 359.5, [-0.21, 0.06, 0.001, -0.002, 0.01])
 TARGET = Checkerboard(9, 6, 25.0)

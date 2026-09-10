@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -19,12 +19,12 @@ import os
 import numpy as np
 import pytest
 
-from caltrust.core.poses import Pose
-from caltrust.core.session import CalibrationRecord, CalibrationSession, RobotPoses
-from caltrust.errors import SerializationError
-from caltrust.io import load_fit, load_session, read_bundle, save_fit, save_session, write_bundle
-from caltrust.io.bundle import check_format
-from caltrust.refit import RefitOptions, instrument
+from calibsense.core.poses import Pose
+from calibsense.core.session import CalibrationRecord, CalibrationSession, RobotPoses
+from calibsense.errors import SerializationError
+from calibsense.io import load_fit, load_session, read_bundle, save_fit, save_session, write_bundle
+from calibsense.io.bundle import check_format
+from calibsense.refit import RefitOptions, instrument
 
 
 def test_bundle_round_trip(tmp_path):
@@ -78,7 +78,7 @@ def test_reading_a_non_npz_says_so(tmp_path):
 def test_reading_an_npz_without_a_manifest_says_so(tmp_path):
     path = str(tmp_path / "plain.npz")
     np.savez(path, a=np.zeros(3))
-    with pytest.raises(SerializationError, match="not a caltrust bundle"):
+    with pytest.raises(SerializationError, match="not a calibsense bundle"):
         read_bundle(path)
 
 
@@ -88,7 +88,7 @@ def test_check_format_rejects_the_wrong_format():
 
 
 def test_check_format_rejects_a_newer_version():
-    with pytest.raises(SerializationError, match="newer than this caltrust"):
+    with pytest.raises(SerializationError, match="newer than this calibsense"):
         check_format({"format": "x", "format_version": 9}, "x", 1)
 
 
@@ -126,7 +126,7 @@ def test_session_without_prior_or_robot_round_trips(good_session, tmp_path):
 def test_loading_a_fit_as_a_session_is_refused(good_session, tmp_path):
     fit = instrument(good_session)
     path = save_fit(fit, str(tmp_path / "f"))
-    with pytest.raises(SerializationError, match="expected a 'caltrust.session'"):
+    with pytest.raises(SerializationError, match="expected a 'calibsense.session'"):
         load_session(path)
 
 
@@ -162,7 +162,7 @@ def test_fit_round_trip_is_exact(session_with_prior, tmp_path, terms):
 
 def test_loading_a_session_as_a_fit_is_refused(good_session, tmp_path):
     path = save_session(good_session, str(tmp_path / "s"))
-    with pytest.raises(SerializationError, match="expected a 'caltrust.fit'"):
+    with pytest.raises(SerializationError, match="expected a 'calibsense.fit'"):
         load_fit(path)
 
 
@@ -240,7 +240,7 @@ def test_a_format_2_fit_bundle_loads_without_the_noise_check(good_session, tmp_p
     They must still load. Losing a diagnostic is acceptable; refusing to open a
     file somebody archived last month is not.
     """
-    from caltrust.io.bundle import read_bundle, write_bundle
+    from calibsense.io.bundle import read_bundle, write_bundle
 
     path = save_fit(instrument(good_session), str(tmp_path / "f"))
     manifest, arrays = read_bundle(path)
@@ -258,7 +258,7 @@ def test_a_format_2_fit_bundle_loads_without_the_noise_check(good_session, tmp_p
 def test_fit_bundle_round_trips_cross_validation(good_session, tmp_path):
     import dataclasses
 
-    from caltrust.validate import cross_validate
+    from calibsense.validate import cross_validate
 
     validation = cross_validate(good_session)
     fit = dataclasses.replace(instrument(good_session), cross_validation=validation)

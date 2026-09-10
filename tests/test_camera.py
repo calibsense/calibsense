@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,13 +16,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.camera import (
+from calibsense.core.camera import (
     FisheyeKannalaBrandt,
     PinholeBrownConrady,
     camera_from_dict,
     registered_models,
 )
-from caltrust.errors import ValidationError
+from calibsense.errors import ValidationError
 
 
 @pytest.mark.parametrize("size", [4, 5, 8, 12, 14])

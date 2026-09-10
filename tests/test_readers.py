@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -19,10 +19,10 @@ import cv2
 import numpy as np
 import pytest
 
-from caltrust.core.camera import FisheyeKannalaBrandt, PinholeBrownConrady
-from caltrust.core.session import CalibrationRecord
-from caltrust.errors import UnsupportedFormatError
-from caltrust.ingest.readers import (
+from calibsense.core.camera import FisheyeKannalaBrandt, PinholeBrownConrady
+from calibsense.core.session import CalibrationRecord
+from calibsense.errors import UnsupportedFormatError
+from calibsense.ingest.readers import (
     KalibrReader,
     NativeJsonReader,
     default_readers,
@@ -257,14 +257,14 @@ def test_native_json_rejects_the_wrong_format(tmp_path):
 
 def test_native_json_rejects_broken_json(tmp_path):
     path = tmp_path / "c.json"
-    path.write_text('{"format": "caltrust.calibration",')
+    path.write_text('{"format": "calibsense.calibration",')
     with pytest.raises(UnsupportedFormatError, match="could not parse"):
         NativeJsonReader().read(str(path))
 
 
 def test_native_json_rejects_a_missing_calibration_key(tmp_path):
     path = tmp_path / "c.json"
-    path.write_text(json.dumps({"format": "caltrust.calibration"}))
+    path.write_text(json.dumps({"format": "calibsense.calibration"}))
     with pytest.raises(UnsupportedFormatError, match="missing"):
         NativeJsonReader().read(str(path))
 

@@ -1,9 +1,9 @@
-# caltrust
+# calibsense
 
 **Your camera calibration reports a reprojection error of 0.2 px. That number
 does not tell you whether you can measure a part to half a millimetre.**
 
-caltrust answers the question the reprojection RMS cannot. Given a folder of
+calibsense answers the question the reprojection RMS cannot. Given a folder of
 calibration images — or a calibration you are already shipping plus the
 detections behind it — it computes the full parameter covariance, finds the
 parameter combinations your capture does not determine at all, tests whether the
@@ -54,7 +54,7 @@ second-order gain — sd(fx) falls from 2.24 to 1.19 — but only once tilt exis
 `sd(fx) = 0.336 px` while being wrong by 139 px. That is not a bug: a
 pseudo-inverse assigns *zero* variance to a direction the data does not
 constrain, so a rank-deficient fit reports false confidence rather than a wide
-error bar. caltrust computes identifiability from the null space of the
+error bar. calibsense computes identifiability from the null space of the
 Jacobi-scaled Schur complement and puts it above every other number it prints.
 
 ---
@@ -72,7 +72,7 @@ list is short on purpose, because the second shipping target is a single binary
 that needs no Python present:
 
 ```sh
-make binary        # -> dist/caltrust, 63 MB
+make binary        # -> dist/calibsense, 64 MB
 ```
 
 Requires Python 3.9 or newer.
@@ -84,7 +84,7 @@ Requires Python 3.9 or newer.
 ### 1. Detect the target across your images
 
 ```sh
-caltrust ingest images \
+calibsense ingest images \
     --images captures/ \
     --target checkerboard:9x6:25mm \
     -o session.npz
@@ -99,7 +99,7 @@ about:
   [   2/20] ... view001  no 9x6 checkerboard found
   [   3/20] ok  view002
   ...
-caltrust session
+calibsense session
 ===============
 
   target       9x6 checkerboard, 25 mm squares
@@ -120,22 +120,22 @@ circles:4x11:0.75in:asymmetric
 Auditing a calibration you already ship? Point at it too:
 
 ```sh
-caltrust ingest images --images captures/ --target checkerboard:9x6:25mm \
+calibsense ingest images --images captures/ --target checkerboard:9x6:25mm \
     --calibration shipped.yml -o session.npz
 ```
 
-Then `caltrust refit session.npz --no-refit` instruments *that* calibration in
+Then `calibsense refit session.npz --no-refit` instruments *that* calibration in
 place rather than re-estimating it — which reports, among other things, whether
 it is even the optimum of its own detections.
 
 ### 2. Ask what the capture supports
 
 ```sh
-caltrust diagnose session.npz
+calibsense diagnose session.npz
 ```
 
 ```
-caltrust diagnosis
+calibsense diagnosis
 ==================
 
   1 critical finding(s) — image coverage — each described below with what it invalidates
@@ -159,7 +159,7 @@ anything.
 ### 3. Get the answer in millimetres
 
 ```sh
-caltrust report session.npz \
+calibsense report session.npz \
     --task length:800mm:100mm --task plane:800mm \
     --json audit.json --pdf audit.pdf \
     --camera-name "line-3 inspection" --contact metrology@example.com
@@ -189,9 +189,9 @@ version a quality manager can sign: it leads with the sentence above, then the
 task-space error table, the variance split, the full parameter table, the
 findings, and a forecast of what more views would buy.
 
-`caltrust noise-floor`, `caltrust refit`, `caltrust show`, `caltrust formats`
+`calibsense noise-floor`, `calibsense refit`, `calibsense show`, `calibsense formats`
 and `--help` cover the rest. For reproducible output, pass `--deterministic` before the subcommand —
-`caltrust --deterministic report ...` — at some cost in speed.
+`calibsense --deterministic report ...` — at some cost in speed.
 
 ---
 
@@ -261,8 +261,8 @@ correlated enough that the covariance is measurably too tight.
 | Targets | checkerboard, ChArUco, circle grid (symmetric and asymmetric) |
 | Camera models | pinhole with Brown–Conrady (4, 5, 8, 12 or 14 coefficients), fisheye with Kannala–Brandt |
 | Sources | a folder of images, or an existing calibration plus its detections |
-| Calibration formats | OpenCV FileStorage (`.yml`/`.yaml`/`.xml`), ROS `camera_info`, Kalibr camchain, caltrust JSON |
-| Detections | caltrust JSON, or an NPZ of `image_points` |
+| Calibration formats | OpenCV FileStorage (`.yml`/`.yaml`/`.xml`), ROS `camera_info`, Kalibr camchain, calibsense JSON |
+| Detections | calibsense JSON, or an NPZ of `image_points` |
 | Robot poses | JSON or CSV; matrix, quaternion or rotation-vector form; either hand-eye direction; any length unit |
 
 Point ids are per view rather than a fixed grid, so a ChArUco board showing half
@@ -375,7 +375,7 @@ noise assumption at all:
 The RMS moves by 2%. The residual structure is unmistakable.
 
 **The same clustering argument protects the covariance.** Every deviation
-caltrust prints rests on `σ² = cost / (m − p)`, which measures the noise scale
+calibsense prints rests on `σ² = cost / (m − p)`, which measures the noise scale
 but *asserts* its shape. Breaking that assumption one way at a time showed most
 of the shape does not matter: anisotropy along the edge direction, noise several
 times worse in some views than others, and a few per cent of badly mis-detected
@@ -415,7 +415,7 @@ target, capture thirty or more frames without touching either, and look at how
 far the detected corners wander.
 
 ```
-caltrust noise-floor --images static/ --target checkerboard:9x6:25mm
+calibsense noise-floor --images static/ --target checkerboard:9x6:25mm
 ```
 
 ```
@@ -461,7 +461,7 @@ The measured sigma then feeds back in, so it changes the answer rather than just
 sitting in a report:
 
 ```
-caltrust report session.npz --pdf report.pdf --noise-px 0.026
+calibsense report session.npz --pdf report.pdf --noise-px 0.026
 ```
 
 That moves the pixel-noise half of the task-space error and leaves the
@@ -534,9 +534,9 @@ optimisation would have revealed it.
 The whole audit in one call:
 
 ```python
-from caltrust import load_session
-from caltrust.report import run_audit, write_json, write_pdf
-from caltrust.task import LengthAtDepth
+from calibsense import load_session
+from calibsense.report import run_audit, write_json, write_pdf
+from calibsense.task import LengthAtDepth
 
 session = load_session("session.npz")
 audit = run_audit(session, tasks=[LengthAtDepth(depth_mm=800.0, length_mm=100.0)])
@@ -554,10 +554,10 @@ write_json(audit, "audit.json")
 Or a piece at a time:
 
 ```python
-from caltrust import cross_validate, diagnose, instrument, session_from_images
-from caltrust.cli.targets import resolve_target
-from caltrust.handeye import diagnose_hand_eye, solve_hand_eye
-from caltrust.task import LengthAtDepth, propagate
+from calibsense import cross_validate, diagnose, instrument, session_from_images
+from calibsense.cli.targets import resolve_target
+from calibsense.handeye import diagnose_hand_eye, solve_hand_eye
+from calibsense.task import LengthAtDepth, propagate
 
 session = session_from_images("captures/", resolve_target("checkerboard:9x6:25mm"))
 fit = instrument(session)
@@ -578,7 +578,7 @@ print(fit.covariance.correlation_with_poses("fx")[:, 5])  # corr(fx, tz) per vie
 print(fit.covariance.dense())                             # if you want it all
 ```
 
-`caltrust.synthetic` generates captures with known truth, which is how the test
+`calibsense.synthetic` generates captures with known truth, which is how the test
 suite works and the easiest way to explore what a capture geometry would buy you.
 
 API reference: `make docs` runs `pdoc` over the docstrings into `docs/api`. There
@@ -672,14 +672,15 @@ Every numeric claim in this README has a test behind it that could fail.
 | Hand-eye recovers known truth | both mountings, derived robot poses | under 6 mm and 1° |
 | The resampled hand-eye covariance covers the error | truth vs predicted deviation | 1.29 mm actual, 1.22 mm predicted |
 | Detectors find real patterns | rendered images, all three targets, both models | 0.09–0.4 px mean localisation error |
-| The frozen binary works | `dist/caltrust` in a stripped environment | full pipeline, `fx = 899.564 ± 0.751` |
+| The frozen binary works | `dist/calibsense` in a stripped environment | full pipeline, `fx = 899.564 ± 0.751` |
 
 ```
-977 passed, 11 skipped in 195s       # make test
-TOTAL  5291 statements, 153 missed, 97%
+1038 passed, 11 skipped in 228s      # make test
+TOTAL  5561 statements, 159 missed, 97%
 ```
 
-The skips are OpenCV-4-only flag-namespace checks. `make test` runs everything;
+Ten skips are OpenCV-4-only flag-namespace checks; the eleventh is a hand-eye
+rig whose two variants happened to select the same views. `make test` runs everything;
 `make fast` skips the Monte Carlo, image-rendering and propagation tests.
 
 Reports are reproducible to about 1e-6 relative rather than bit-exact, because
@@ -692,9 +693,9 @@ the two wall-clock timestamps.
 
 ## Design notes
 
-**Layering.** `caltrust.core` holds the data — cameras, targets, detections,
+**Layering.** `calibsense.core` holds the data — cameras, targets, detections,
 poses, sessions — and does not import OpenCV. Projection, differentiation and
-fitting live in `caltrust.refit`; detection and file reading in `caltrust.ingest`.
+fitting live in `calibsense.refit`; detection and file reading in `calibsense.ingest`.
 The dependency arrows all point at `core`, which is why the core is testable
 without a single image.
 
@@ -713,14 +714,14 @@ the fisheye flags in `cv2.fisheye` with their own bit numbering and defines
 same-named constants in `cv2` with *different* values; OpenCV 5 merged them onto
 the pinhole numbering. Reading `cv2.CALIB_FIX_K1` and handing it to
 `cv2.fisheye.calibrate` therefore fixes the wrong coefficient on OpenCV 4 and the
-right one on OpenCV 5. Every flag resolves through `caltrust.refit.cv_compat`.
+right one on OpenCV 5. Every flag resolves through `calibsense.refit.cv_compat`.
 
 Three OpenCV behaviours worth knowing, all found while building this:
 
 - `cv2.fisheye.calibrate` estimates its own starting intrinsics when not given
   any, and on ordinary captures that estimate *fails outright* — it raises
   `fabs(norm_u1) > 0` from `InitExtrinsics` rather than returning a poor answer.
-  caltrust supplies its own ladder of focal-length guesses starting at `width/π`
+  calibsense supplies its own ladder of focal-length guesses starting at `width/π`
   and reports which rung converged.
 - A `CALIB_FIX_Kn` flag holds the supplied value on the pinhole path and *zeroes*
   the coefficient on the fisheye path. Either way the parameter leaves the
@@ -737,7 +738,7 @@ Three OpenCV behaviours worth knowing, all found while building this:
 carries an `SPDX-License-Identifier: AGPL-3.0-only` header.
 
 One consequence worth stating plainly rather than leaving to be discovered.
-**Section 13 reaches network use:** if you modify caltrust and let people
+**Section 13 reaches network use:** if you modify calibsense and let people
 interact with the modified version over a network — an upload-your-calibration
 web service, a report generator behind an internal API — you have to offer those
 users the corresponding source. Running it as a CLI, or importing it as a library
@@ -748,7 +749,7 @@ is MIT, and OpenCV is Apache-2.0 with LGPL-2.1 components in the distributed
 wheels. All are one-way compatible into an AGPL work.
 
 A PyInstaller binary of an AGPL program is a distribution of the program, so
-`dist/caltrust` has to be accompanied by the corresponding source or a written
+`dist/calibsense` has to be accompanied by the corresponding source or a written
 offer for it.
 
 If AGPL does not suit your organisation, contact the author — the copyright is

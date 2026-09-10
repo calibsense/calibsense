@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -29,9 +29,9 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from caltrust.core.camera import CameraModel, FisheyeKannalaBrandt
-from caltrust.core.poses import Pose
-from caltrust.core.target import CharucoBoard, Checkerboard, CircleGrid, TargetSpec
+from calibsense.core.camera import CameraModel, FisheyeKannalaBrandt
+from calibsense.core.poses import Pose
+from calibsense.core.target import CharucoBoard, Checkerboard, CircleGrid, TargetSpec
 
 #: Texture resolution, in pixels per millimetre of board.
 TEXTURE_SCALE = 4.0
@@ -275,7 +275,7 @@ def write_static_capture(
 ) -> Tuple[str, ...]:
     """Render one pose repeatedly, with independent sensor noise per frame.
 
-    This is the capture `caltrust noise-floor` expects: nothing moves, so every
+    This is the capture `calibsense noise-floor` expects: nothing moves, so every
     difference between frames is the detector responding to sensor noise.
     `write_views` cannot be used for it, because that passes one seed to every
     frame and would write the same image `n_frames` times.

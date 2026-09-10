@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -22,11 +22,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.camera import PinholeBrownConrady
-from caltrust.core.observations import ObservationSet, ViewObservations
-from caltrust.core.target import Checkerboard
-from caltrust.errors import ValidationError
-from caltrust.noisefloor import (
+from calibsense.core.camera import PinholeBrownConrady
+from calibsense.core.observations import ObservationSet, ViewObservations
+from calibsense.core.target import Checkerboard
+from calibsense.errors import ValidationError
+from calibsense.noisefloor import (
     ANISOTROPY_EXCESS_WARNING,
     CORRELATION_SPACINGS_CRITICAL,
     CORRELATION_SPACINGS_WARNING,
@@ -35,8 +35,8 @@ from caltrust.noisefloor import (
     anisotropy_floor,
     measure_noise_floor,
 )
-from caltrust.refit.projection import projector_for
-from caltrust.synthetic import pose_for_view
+from calibsense.refit.projection import projector_for
+from calibsense.synthetic import pose_for_view
 
 IMAGE_SIZE = (1280, 720)
 BOARD = Checkerboard(9, 6, 25.0)
@@ -526,7 +526,7 @@ def test_correlation_is_not_biased_low_by_unequal_presence():
     correlation down by the square root of the overlap and report a perfectly
     shared field as partly independent.
     """
-    from caltrust.noisefloor import _correlation_profile
+    from calibsense.noisefloor import _correlation_profile
 
     rng = np.random.default_rng(0)
     n_frames, n_corners = 100, 6
@@ -546,7 +546,7 @@ class TestCrossing:
     """
 
     def crossing(self, x, y):
-        from caltrust.noisefloor import CORRELATION_THRESHOLD, _crossing
+        from calibsense.noisefloor import CORRELATION_THRESHOLD, _crossing
 
         return _crossing(np.asarray(x, float), np.asarray(y, float), CORRELATION_THRESHOLD)
 
@@ -585,7 +585,7 @@ def test_an_unusable_profile_is_empty_rather_than_wrong():
     Reachable only below the entry point's own guards, but the profile has to
     degrade to "measured nothing" rather than to a fabricated length.
     """
-    from caltrust.noisefloor import _correlation_profile
+    from calibsense.noisefloor import _correlation_profile
 
     deviations = np.full((MIN_FRAMES, 3, 2), np.nan)
     means = np.array([[0.0, 0.0], [30.0, 0.0], [60.0, 0.0]])

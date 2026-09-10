@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,9 +16,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.observations import ObservationSet, ViewObservations
-from caltrust.errors import ValidationError
-from caltrust.refit.residuals import (
+from calibsense.core.observations import ObservationSet, ViewObservations
+from calibsense.errors import ValidationError
+from calibsense.refit.residuals import (
     MAD_TO_SIGMA,
     OUTLIER_Z,
     radial_profile,

@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "caltrust"
+name = "calibsense"
 version = "0.1.0"
-description = "Metric trust for camera calibration: uncertainty, diagnosis and task-space error, not just a reprojection number"
+description = "Measurement uncertainty for camera calibration: covariance, diagnosis and task-space error, not just a reprojection number"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "AGPL-3.0-only"
@@ -34,16 +34,16 @@ docs = ["pdoc>=14.0"]
 binary = ["pyinstaller>=6.0"]
 
 [project.urls]
-Homepage = "https://github.com/abhishek-gola/caltrust"
+Homepage = "https://github.com/calibsense/calibsense"
 
 [project.scripts]
-caltrust = "caltrust.cli.main:main"
+calibsense = "calibsense.cli.main:main"
 
 [tool.setuptools.packages.find]
-include = ["caltrust*"]
+include = ["calibsense*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = ["slow: multi-second statistical tests (Monte Carlo, image rendering)"]
-filterwarnings = ["error::DeprecationWarning:caltrust.*"]
+filterwarnings = ["error::DeprecationWarning:calibsense.*"]

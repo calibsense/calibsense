@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -27,17 +27,17 @@ import cv2
 import numpy as np
 import pytest
 
-from caltrust.core.camera import PinholeBrownConrady
-from caltrust.core.poses import Pose
-from caltrust.core.session import CalibrationSession
-from caltrust.errors import DegenerateSystemError, ValidationError
-from caltrust.refit.covariance import (
+from calibsense.core.camera import PinholeBrownConrady
+from calibsense.core.poses import Pose
+from calibsense.core.session import CalibrationSession
+from calibsense.errors import DegenerateSystemError, ValidationError
+from calibsense.refit.covariance import (
     WEAK_DIRECTION_THRESHOLD,
     covariance_from_normal_equations,
 )
-from caltrust.refit.normal import POSE_DIMENSION, assemble
-from caltrust.refit.projection import projector_for
-from caltrust.synthetic import diverse_poses, synthesise
+from calibsense.refit.normal import POSE_DIMENSION, assemble
+from calibsense.refit.projection import projector_for
+from calibsense.synthetic import diverse_poses, synthesise
 
 
 def opencv_calibrate(observations):
@@ -268,7 +268,7 @@ def test_a_tied_aspect_ratio_removes_fy(good_capture):
 
 def test_no_degrees_of_freedom_is_an_error(pinhole, checkerboard):
     """Four points in one view cannot support both a pose and nine intrinsics."""
-    from caltrust.core.observations import ObservationSet, ViewObservations
+    from calibsense.core.observations import ObservationSet, ViewObservations
 
     projector = projector_for(pinhole)
     pose = diverse_poses(checkerboard, 1, seed=0)[0]
@@ -366,7 +366,7 @@ def correlated_noise(points, rng, length_px, sigma):
 
 def reshape_noise(clean, rng, kind, length_px=200.0, sigma=0.25):
     """Rebuild a noiseless capture with noise of a chosen structure added."""
-    from caltrust.core.observations import ObservationSet, ViewObservations
+    from calibsense.core.observations import ObservationSet, ViewObservations
 
     views = []
     for view in clean.views:
@@ -506,7 +506,7 @@ def test_equations_without_per_view_scores_have_no_robust_covariance(good_captur
     """An old bundle loses the check rather than silently inventing one."""
     import dataclasses
 
-    from caltrust.errors import RefitError
+    from calibsense.errors import RefitError
 
     camera, poses, _, _ = opencv_calibrate(good_capture.observations)
     equations, _ = covariance_at(camera, poses, good_capture.observations)
@@ -521,7 +521,7 @@ def test_equations_without_per_view_scores_have_no_robust_covariance(good_captur
 
 def test_a_single_view_has_no_between_view_scatter(pinhole, checkerboard):
     """One cluster cannot have a spread, so there is no robust estimate."""
-    from caltrust.core.observations import ObservationSet, ViewObservations
+    from calibsense.core.observations import ObservationSet, ViewObservations
 
     projector = projector_for(pinhole)
     pose = diverse_poses(checkerboard, 1, seed=1)[0]

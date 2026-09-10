@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import pytest
 
-from caltrust.core.poses import (
+from calibsense.core.poses import (
     Pose,
     matrix_to_rotvec,
     poses_from_array,
@@ -26,7 +26,7 @@ from caltrust.core.poses import (
     rotvec_to_matrix,
     validate_rotation,
 )
-from caltrust.errors import ValidationError
+from calibsense.errors import ValidationError
 
 
 def random_rotvecs(count, seed=0, max_angle=np.pi):

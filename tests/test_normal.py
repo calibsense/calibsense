@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,10 +16,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.core.camera import PinholeBrownConrady
-from caltrust.errors import RefitError, ValidationError
-from caltrust.refit.normal import POSE_DIMENSION, assemble
-from caltrust.refit.projection import projector_for
+from calibsense.core.camera import PinholeBrownConrady
+from calibsense.errors import RefitError, ValidationError
+from calibsense.refit.normal import POSE_DIMENSION, assemble
+from calibsense.refit.projection import projector_for
 
 
 def dense_jacobian(camera, poses, observations, block):
@@ -232,7 +232,7 @@ def test_negative_weights_are_rejected(good_capture):
 
 
 def test_a_pose_behind_the_camera_is_reported_as_a_refit_error(good_capture):
-    from caltrust.core.poses import Pose
+    from calibsense.core.poses import Pose
 
     camera = good_capture.camera
     poses = list(good_capture.poses)

@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -21,25 +21,25 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.diagnose import Severity, diagnose
-from caltrust.diagnose.coverage import (
+from calibsense.diagnose import Severity, diagnose
+from calibsense.diagnose.coverage import (
     GRID,
     border_mask,
     nearest_neighbour_spacing,
     occupancy,
 )
-from caltrust.diagnose.geometry import (
+from calibsense.diagnose.geometry import (
     FRONTOPARALLEL_DEGREES,
     normal_spread_degrees,
     orientation_tensor,
 )
-from caltrust.diagnose.model import (
+from calibsense.diagnose.model import (
     MIN_RADIUS_SIGMAS,
     clustered_radial_profile,
     flatness_z,
     radial_trend,
 )
-from caltrust.diagnose.views import view_influences
+from calibsense.diagnose.views import view_influences
 
 from . import rigs
 
@@ -339,7 +339,7 @@ def test_the_inner_radius_is_excluded_where_the_direction_is_ill_defined():
 
 
 def test_flatness_z_is_near_zero_for_a_flat_profile():
-    from caltrust.diagnose.model import ClusteredProfile
+    from calibsense.diagnose.model import ClusteredProfile
 
     profile = ClusteredProfile(
         centres=np.linspace(100.0, 400.0, 6),
@@ -351,7 +351,7 @@ def test_flatness_z_is_near_zero_for_a_flat_profile():
 
 
 def test_flatness_z_grows_with_structure():
-    from caltrust.diagnose.model import ClusteredProfile
+    from calibsense.diagnose.model import ClusteredProfile
 
     centres = np.linspace(100.0, 400.0, 6)
     errors = np.full(6, 0.01)
@@ -362,7 +362,7 @@ def test_flatness_z_grows_with_structure():
 
 def test_flatness_catches_oscillation_that_a_slope_misses():
     """A truncated polynomial leaves alternating signs, which a trend cannot see."""
-    from caltrust.diagnose.model import ClusteredProfile
+    from calibsense.diagnose.model import ClusteredProfile
 
     centres = np.linspace(100.0, 400.0, 6)
     # Symmetric about the middle radius and summing to zero, so the pattern is
@@ -376,7 +376,7 @@ def test_flatness_catches_oscillation_that_a_slope_misses():
 
 
 def test_radial_trend_needs_three_bins():
-    from caltrust.diagnose.model import ClusteredProfile
+    from calibsense.diagnose.model import ClusteredProfile
 
     profile = ClusteredProfile(
         np.array([100.0, 200.0]), np.zeros(2), np.full(2, 0.01), np.full(2, 10)
@@ -449,8 +449,8 @@ def test_without_cross_validation_the_finding_says_so():
 
 
 def test_a_generalising_fit_passes():
-    from caltrust.core.session import CalibrationSession
-    from caltrust.validate import cross_validate
+    from calibsense.core.session import CalibrationSession
+    from calibsense.validate import cross_validate
 
     context = rigs.healthy()
     session = CalibrationSession(observations=context.observations)
@@ -464,8 +464,8 @@ def test_a_generalising_fit_passes():
 
 
 def test_a_degenerate_capture_makes_the_ratio_uninformative():
-    from caltrust.core.session import CalibrationSession
-    from caltrust.validate import cross_validate
+    from calibsense.core.session import CalibrationSession
+    from calibsense.validate import cross_validate
 
     context = rigs.frontoparallel()
     session = CalibrationSession(observations=context.observations)
@@ -489,9 +489,9 @@ def test_a_high_ratio_is_reported_at_the_right_severity():
     """
     import dataclasses
 
-    from caltrust.core.session import CalibrationSession
-    from caltrust.diagnose.generalisation import OutOfSampleError
-    from caltrust.validate import cross_validate
+    from calibsense.core.session import CalibrationSession
+    from calibsense.diagnose.generalisation import OutOfSampleError
+    from calibsense.validate import cross_validate
 
     context = rigs.healthy()
     validation = cross_validate(CalibrationSession(observations=context.observations))
@@ -519,10 +519,10 @@ def test_a_high_ratio_is_reported_at_the_right_severity():
 
 def test_the_ratio_rises_with_model_complexity(pinhole, checkerboard):
     """The empirical direction, even where the absolute value stays modest."""
-    from caltrust.core.session import CalibrationSession
-    from caltrust.refit import RefitOptions
-    from caltrust.synthetic import diverse_poses, synthesise
-    from caltrust.validate import cross_validate
+    from calibsense.core.session import CalibrationSession
+    from calibsense.refit import RefitOptions
+    from calibsense.synthetic import diverse_poses, synthesise
+    from calibsense.validate import cross_validate
 
     capture = synthesise(
         pinhole, checkerboard, diverse_poses(checkerboard, 10, seed=4),

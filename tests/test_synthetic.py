@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -16,9 +16,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from caltrust.errors import ValidationError
-from caltrust.refit.projection import projector_for
-from caltrust.synthetic import (
+from calibsense.errors import ValidationError
+from calibsense.refit.projection import projector_for
+from calibsense.synthetic import (
     diverse_poses,
     frontoparallel_poses,
     pose_for_view,
@@ -135,8 +135,8 @@ def test_a_view_with_too_few_visible_points_is_dropped_whole(pinhole, checkerboa
 
 
 def test_a_board_behind_the_camera_is_skipped(pinhole, checkerboard):
-    from caltrust.core.poses import Pose
-    from caltrust.core.poses import rotvec_to_matrix
+    from calibsense.core.poses import Pose
+    from calibsense.core.poses import rotvec_to_matrix
 
     behind = Pose(rotvec_to_matrix([0.0, 0.0, 0.0]), [0.0, 0.0, -800.0])
     good = diverse_poses(checkerboard, 3, seed=2)

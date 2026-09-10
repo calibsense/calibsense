@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -17,15 +17,15 @@ import json
 
 import pytest
 
-from caltrust.cli.targets import (
+from calibsense.cli.targets import (
     ALIASES,
     SHORTHAND_HELP,
     load_target_file,
     parse_shorthand,
     resolve_target,
 )
-from caltrust.core.target import CharucoBoard, Checkerboard, CircleGrid
-from caltrust.errors import ValidationError
+from calibsense.core.target import CharucoBoard, Checkerboard, CircleGrid
+from calibsense.errors import ValidationError
 
 
 @pytest.mark.parametrize(
@@ -86,7 +86,7 @@ def test_bad_shorthand_explains_itself(text, message):
 
 
 def test_every_alias_maps_to_a_real_kind():
-    from caltrust.core.target import registered_targets
+    from calibsense.core.target import registered_targets
 
     assert set(ALIASES.values()) <= set(registered_targets())
 

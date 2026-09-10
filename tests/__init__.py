@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -9,7 +9,7 @@
 # without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 # PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
 
-"""Test suite for caltrust.
+"""Test suite for calibsense.
 
 A package rather than a bare directory so that `rendering.py` can be imported
 explicitly instead of relying on pytest's path insertion.

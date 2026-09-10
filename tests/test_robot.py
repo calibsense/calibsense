@@ -1,4 +1,4 @@
-# caltrust - metric trust for camera calibration.
+# calibsense - measurement uncertainty for camera calibration.
 # Copyright (C) 2026 Abhishek Gola
 #
 # SPDX-License-Identifier: AGPL-3.0-only
@@ -18,9 +18,9 @@ import json
 import numpy as np
 import pytest
 
-from caltrust.core.poses import Pose, quaternion_to_matrix
-from caltrust.errors import UnsupportedFormatError, ValidationError
-from caltrust.ingest.robot import read_robot_poses, write_robot_poses
+from calibsense.core.poses import Pose, quaternion_to_matrix
+from calibsense.errors import UnsupportedFormatError, ValidationError
+from calibsense.ingest.robot import read_robot_poses, write_robot_poses
 
 QUATERNION = [0.0, 0.0, 0.3826834, 0.9238795]  # 45 degrees about z, (x, y, z, w)
 
@@ -29,7 +29,7 @@ def test_json_matrix_form(tmp_path):
     pose = Pose.from_rvec_tvec([0.1, 0.2, 0.3], [10.0, 20.0, 500.0])
     path = tmp_path / "r.json"
     path.write_text(json.dumps({
-        "format": "caltrust.robot_poses",
+        "format": "calibsense.robot_poses",
         "poses": [{"view_id": "a", "matrix": pose.matrix.tolist()}],
     }))
     poses = read_robot_poses(str(path))
