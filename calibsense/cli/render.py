@@ -67,7 +67,8 @@ def render_session(session: CalibrationSession) -> str:
         The report.
     """
     observations = session.observations
-    lines = ["calibsense session", "=" * 15, ""]
+    title = "calibsense session"
+    lines = [title, "=" * len(title), ""]
     lines += [f"  {line}" for line in session.summary_lines()]
     lines.append(f"  created      {session.created} by calibsense {session.calibsense_version}")
 
@@ -113,7 +114,8 @@ def render_fit(fit: InstrumentedFit, verbose: bool = False) -> str:
     """
     covariance = fit.covariance
     conditioning = fit.conditioning
-    lines = ["calibsense instrumented refit", "=" * 27, ""]
+    title = "calibsense instrumented refit"
+    lines = [title, "=" * len(title), ""]
     lines += [f"  {line}" for line in fit.summary_lines()]
     if fit.initial_guess:
         lines.append(f"  init         started from {fit.initial_guess}")
@@ -254,7 +256,8 @@ def render_diagnosis(diagnosis: Diagnosis, include_ok: bool = False) -> str:
     Returns:
         The report.
     """
-    lines = ["calibsense diagnosis", "=" * 18, ""]
+    title = "calibsense diagnosis"
+    lines = [title, "=" * len(title), ""]
     lines += [f"  {line}" if line else "" for line in
               diagnosis.summary_lines(include_ok=include_ok)]
     if not include_ok and diagnosis.passing:

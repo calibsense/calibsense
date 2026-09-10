@@ -115,12 +115,12 @@ class Diagnosis:
         if self.critical:
             causes = ", ".join(f.title.lower() for f in self.critical)
             return (
-                f"{len(self.critical)} critical finding(s) — {causes} — each "
+                f"{len(self.critical)} critical finding(s): {causes}. Each is "
                 "described below with what it invalidates"
             )
         if self.warnings:
             causes = ", ".join(f.title.lower() for f in self.warnings)
-            return f"{len(self.warnings)} warning(s) — {causes}"
+            return f"{len(self.warnings)} warning(s): {causes}"
         return "no problems found in the capture geometry or the residuals"
 
     def summary_lines(self, include_ok: bool = False) -> Tuple[str, ...]:
