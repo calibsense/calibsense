@@ -158,7 +158,12 @@ class NoiseModelValidity(Diagnostic):
                 "The usual causes are field-varying defocus, an illumination or "
                 "vignetting gradient pulling on the sub-pixel refinement, a "
                 "board that is not flat, motion blur, or a rolling shutter. "
-                "Until it is found, multiply every interval in this report by "
+                "To tell them apart, measure the noise directly rather than "
+                "inferring it: capture thirty frames without touching the "
+                "camera or the target and run `caltrust noise-floor`, which "
+                "reports the correlation length and separates a genuinely "
+                "correlated field from a mount that simply drifted. Until the "
+                "cause is found, multiply every interval in this report by "
                 f"{worst:.1f}. Note that the RMS will look *better* under this "
                 "fault, not worse, so it cannot be used to check the fix.",
                 **metrics,

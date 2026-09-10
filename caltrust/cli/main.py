@@ -33,6 +33,8 @@ from ..core.target import registered_targets
 from ..errors import CalTrustError
 from ..ingest import (
     DetectorOptions,
+    detect_in_images,
+    find_images,
     reader_names,
     registered_detectors,
     session_from_calibration,
@@ -40,6 +42,7 @@ from ..ingest import (
 )
 from ..diagnose import diagnose
 from ..io import load_fit, load_session, save_fit, save_session
+from ..noisefloor import MIN_PRESENCE, measure_noise_floor
 from ..refit import RefitOptions, instrument, set_single_threaded
 from ..report import ReportMetadata, render_text, run_audit, write_json, write_pdf
 from ..validate import cross_validate
@@ -282,7 +285,36 @@ def build_parser() -> argparse.ArgumentParser:
                         help="where to send questions; printed as the last line")
     report.add_argument("--open-question", metavar="TEXT",
                         help="the question the report puts back to the reader")
+    report.add_argument("--noise-px", type=float, metavar="SIGMA",
+                        help="pixel noise to propagate, instead of the one inferred "
+                             "from this fit's residuals; take it from the `use` line "
+                             "of `caltrust noise-floor`")
     report.set_defaults(handler=_report)
+
+    noise = subparsers.add_parser(
+        "noise-floor",
+        help="measure detector noise directly, from frames of a static scene",
+        description="Point a fixed camera at a fixed target, capture thirty or "
+                    "more frames without touching either, and this reports what "
+                    "the detector's noise actually is. Everything else in "
+                    "caltrust infers sigma from fit residuals, which assumes the "
+                    "model is right; this does not.",
+    )
+    noise.add_argument("--images", required=True, metavar="PATH",
+                       help="folder of static frames, or a single image")
+    noise.add_argument("--target", required=True, help="target file, or shorthand")
+    noise.add_argument("-o", "--output", metavar="FILE", help="write the measurement as JSON")
+    noise.add_argument("--json", action="store_true", help="emit JSON on stdout instead of text")
+    noise.add_argument("--no-recursive", action="store_true", help="do not descend into subfolders")
+    noise.add_argument("--min-points", type=int, default=8, metavar="N",
+                       help="fewest points a frame must yield (default: %(default)s)")
+    noise.add_argument("--no-refine", action="store_true",
+                       help="skip sub-pixel refinement, to measure the raw detector")
+    noise.add_argument("--fast", action="store_true", help="favour speed over detection rate")
+    noise.add_argument("--min-presence", type=float, default=MIN_PRESENCE, metavar="F",
+                       help="fraction of frames a corner must appear in (default: %(default)s)")
+    noise.add_argument("--quiet", action="store_true", help="do not print per-image progress")
+    noise.set_defaults(handler=_noise_floor)
 
     show = subparsers.add_parser("show", help="print a session or a fit bundle")
     show.add_argument("path", metavar="FILE", help="session or fit bundle")
@@ -439,6 +471,7 @@ def _report(args: argparse.Namespace) -> int:
     audit = run_audit(
         session, options, tasks, ReportMetadata(**metadata_fields),
         folds=args.folds, n_samples=args.samples, mounting=args.mounting,
+        observation_noise_px=args.noise_px,
         seed=args.seed,
     )
     if needs_hand_eye:
@@ -487,6 +520,28 @@ def _show(args: argparse.Namespace) -> int:
         print(json.dumps(render.session_to_json(session), indent=2) if args.json
               else render.render_session(session), end="" if not args.json else "\n")
     return EXIT_OK
+
+
+def _noise_floor(args: argparse.Namespace) -> int:
+    observations = detect_in_images(
+        find_images(args.images, recursive=not args.no_recursive),
+        resolve_target(args.target),
+        options=_detector_options(args),
+        progress=None if args.quiet else _progress,
+    )
+    floor = measure_noise_floor(observations, min_presence=args.min_presence)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as handle:
+            json.dump(floor.to_dict(), handle, indent=2)
+    if args.json:
+        print(json.dumps(floor.to_dict(), indent=2))
+    else:
+        if not args.quiet:
+            print()
+        print("\n".join(floor.summary_lines()))
+        if args.output:
+            print(f"\nwrote {args.output}")
+    return EXIT_OK if floor.trustworthy_covariance else EXIT_FINDINGS
 
 
 def _formats(args: argparse.Namespace) -> int:

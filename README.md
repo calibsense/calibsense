@@ -189,8 +189,8 @@ version a quality manager can sign: it leads with the sentence above, then the
 task-space error table, the variance split, the full parameter table, the
 findings, and a forecast of what more views would buy.
 
-`caltrust refit`, `caltrust show`, `caltrust formats` and `--help` cover the
-rest. For reproducible output, pass `--deterministic` before the subcommand —
+`caltrust noise-floor`, `caltrust refit`, `caltrust show`, `caltrust formats`
+and `--help` cover the rest. For reproducible output, pass `--deterministic` before the subcommand —
 `caltrust --deterministic report ...` — at some cost in speed.
 
 ---
@@ -406,6 +406,68 @@ pose has absorbed what it can. Nothing is assumed about the noise *within* a
 view. Near one, the assumption held for your capture and the intervals are
 defensible by measurement rather than by assertion. At 3x, they are a third of
 what the data supports, and the report says which parameter and by how much.
+
+### Or measure the noise instead of inferring it
+
+The sandwich estimator detects the problem without naming it. To see the noise
+itself, take the model out of the loop entirely: point a fixed camera at a fixed
+target, capture thirty or more frames without touching either, and look at how
+far the detected corners wander.
+
+```
+caltrust noise-floor --images static/ --target checkerboard:9x6:25mm
+```
+
+```
+frames       40 static frames, 54 corners
+scale        0.0270 px total, 0.0262 px irreducible (6% absorbable by pose)
+correlation  length 0.0 px, 0.00 of the 31 px corner spacing (independent)
+shape        anisotropy 1.68 against a 1.21 floor from 40 frames, 65% of long
+             axes within 30 deg of the board edge (33% by chance)
+drift        0.0090 px largest whole-frame shift
+use          sigma = 0.0262 px when propagating, in place of one inferred from
+             residuals
+```
+
+The correlation length is the number that decides whether the rest of the report
+can be trusted, and it is measured here rather than inferred. Independent noise
+reads `0.0`; a field that moves neighbouring corners together reads at the scale
+of that field.
+
+It is judged **in corner spacings, not pixels**, because pixels do not transfer
+between rigs: injecting one field into a 9x6 board at 700 mm gives a 51 px
+correlation length and into a 21x14 board 79 px, for the same fault. What decides
+whether the independence assumption fails is whether *adjacent* corners share
+noise, and the denser board correctly reads as worse — more of the independent
+observations the covariance is counting are not independent. Above one spacing
+the robust covariance is the one to read; above three, the cause needs finding
+before any interval is quotable. Drift is separated from a genuinely correlated field, because
+drift is perfectly correlated across the whole board and disappears once a
+per-frame affine is removed — the same thing a free per-view pose does during a
+fit. A correlation length longer than the board cannot be measured, so both
+profiles stop at the widest corner separation rather than extrapolating.
+
+The anisotropy is quoted against its own floor, because a sample covariance from
+few frames is elongated by chance: ten frames put the expected ratio at 1.53, so
+a fixed threshold would call every clean short capture directional. The floor is
+exact rather than tabulated — with `t = (λ₁−λ₂)/(λ₁+λ₂)`, `t²` follows
+`Beta(1, (n−2)/2)`, verified against simulation to three decimals from ten
+frames to a thousand. The run above found a real directional detector on
+rendered images, at 1.68 against a 1.21 floor with two thirds of the long axes
+lying on the board edge — the expected signature of anything that finds a corner
+by locating two edges, and something the tool discovered rather than was told.
+
+The measured sigma then feeds back in, so it changes the answer rather than just
+sitting in a report:
+
+```
+caltrust report session.npz --pdf report.pdf --noise-px 0.026
+```
+
+That moves the pixel-noise half of the task-space error and leaves the
+calibration half untouched. A capture whose corners move more than 5 px is
+refused with an explanation instead of a number — that is motion, not detector
+noise.
 
 ---
 

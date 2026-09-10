@@ -520,6 +520,91 @@ prediction.forecast_identifiable
 
 ---
 
+## Measuring the noise instead of assuming it
+
+Everything above derives `sigma` from the fit's own residuals, which means it
+assumes the model is right. If the distortion model is too short, some of the
+mismatch lands in `sigma` and every interval inherits it. There is one way out,
+and it needs no model at all: point a fixed camera at a fixed target, take
+thirty or more frames without touching either, and look at how much the
+detected corners move.
+
+```python
+from caltrust import measure_noise_floor
+from caltrust.ingest import detect_in_images, find_images
+
+observations = detect_in_images(find_images("static/"), target)
+floor = measure_noise_floor(observations)
+
+print("\n".join(floor.summary_lines()))
+sigma = floor.sigma_for_propagation()
+```
+
+```
+caltrust noise-floor --images static/ --target checkerboard:9x6:25mm
+```
+
+Three numbers matter, in this order.
+
+**`irreducible_sigma_px`** is the scale, and it is the figure to hand to
+`propagate` in place of one inferred from residuals. It is smaller than
+`total_sigma_px` because a per-frame affine is removed first: a free per-view
+pose absorbs whole-board movement during a fit, so the noise a measurement
+actually suffers is what survives that. `absorbed_fraction` says how much went;
+above half means the rig moved, and `drift_px` says by how much.
+
+**`correlation_spacings`** is the one that decides whether the rest of the report
+can be believed. Independent corner noise reads `0.0`. A field that makes
+neighbouring corners move together reads at the scale of that field, and in that
+regime the classical covariance understates the parameter spread — by a factor
+of eight in the case measured here — while *lowering* the RMS.
+
+It is a ratio rather than `correlation.length_px` itself because pixels do not
+transfer between rigs: the same injected field reads 51 px on a 9x6 board and
+79 px on a 21x14 one. Dividing by the median corner spacing asks the question
+that actually matters — do adjacent corners share noise — and the denser board
+then reads as worse, correctly, since more of the observations the covariance
+treats as independent are not. That is why
+`trustworthy_covariance` is a separate flag and why the RMS cannot be used to
+check the fix. `total_correlation` is the same profile before the affine
+removal, so a correlated field and a drifting mount can be told apart: drift is
+perfectly correlated across the whole board and vanishes from
+`correlation` entirely.
+
+A correlation length cannot exceed the board it was measured on. Both profiles
+stop at the widest corner separation in the capture rather than extrapolating,
+so a field smoother than the target reads as "at least this long".
+
+**`anisotropy_median`**, against **`anisotropy_floor`**. A sample covariance
+from few frames is elongated by chance alone: ten frames put the expected
+anisotropy at 1.53, so any fixed threshold calls a clean short capture
+directional. The floor is exact — with `t = (l1-l2)/(l1+l2)`, `t**2` follows
+`Beta(1, (n-2)/2)` — so `anisotropy_excess` is the ratio worth reading, and one
+means nothing to report. Anisotropy on its own does not break the covariance;
+it was measured not to. It tells you the detector is working harder in one
+direction, which `edge_aligned_fraction` then places relative to the board's own
+edges, against the 33% that land there by chance.
+
+Running this on rendered frames through the real OpenCV detector reports
+sigma 0.026 px, no correlation, and anisotropy 1.68 against a 1.21 floor with
+65% of long axes on the board edge — a directional detector, found rather than
+assumed.
+
+The measured figure is only worth having if it can reach the millimetres, so
+both `propagate` and `run_audit` take it, and the CLI carries it too:
+
+```
+caltrust report session.npz --pdf report.pdf --noise-px 0.026
+```
+
+It moves the pixel-noise half of the task-space error and leaves the calibration
+half alone, which is the split `variance_share` reports.
+
+The tool refuses a capture whose corners move more than 5 px, because that is
+motion and not detector noise, and it says so rather than returning a number.
+
+---
+
 ## The CLI, and its Python equivalent
 
 | command | equivalent |
@@ -530,11 +615,14 @@ prediction.forecast_identifiable
 | `caltrust refit s.npz --cross-validate` | `+ cross_validate(session)` |
 | `caltrust diagnose s.npz` | `+ diagnose(fit, obs, validation)` |
 | `caltrust report s.npz --pdf p --json j` | `run_audit(...)` then `write_pdf` / `write_json` |
+| `caltrust noise-floor --images D --target T` | `measure_noise_floor(detect_in_images(...))` |
 | `caltrust show s.npz` | `render_session` / `render_fit` |
 | `caltrust formats` | `registered_targets`, `reader_names`, ... |
 
 `caltrust diagnose` and `caltrust report` exit **3** on a critical finding, so a
 CI step can gate on calibration quality without parsing the report.
+`caltrust noise-floor` exits **3** when the measured noise is correlated enough
+that the classical covariance should not be trusted.
 
 `--deterministic` pins OpenCV to one thread. Without it, output differs in the
 last few bits between runs: `cv2.calibrateCamera` reduces across threads and

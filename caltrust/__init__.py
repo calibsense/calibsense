@@ -45,8 +45,24 @@ between them.
 
 `caltrust.diagnose` covers M4: one diagnostic per cause — pose diversity, depth
 variation, frontoparallel dominance, image coverage, target scale, distortion
-model adequacy and per-view leverage — each returning a finding that names the
-cause and says what to do about it.
+model adequacy, per-view leverage and the noise model — each returning a finding
+that names the cause and says what to do about it.
+
+`caltrust.task` covers M5: the parameter covariance propagated by Monte Carlo
+into the millimetres of the measurement actually being made — a length, a plane
+fit, a stereo depth, a distance to a base frame — separating what calibration
+contributes from what pixel noise does.
+
+`caltrust.handeye` covers M6: the camera-to-robot transform with its own
+covariance, and whether the pose set determines it at all.
+
+`caltrust.report` covers M7: the whole audit as one paragraph in millimetres, a
+JSON record, and a PDF, ending with what the audit could not settle.
+
+`caltrust.noisefloor` measures corner noise directly from frames of a static
+scene, with no model in the way. Everything else infers sigma from residuals,
+which assumes the model is right; this does not, and it is the only place the
+spatial correlation that invalidates the covariance can actually be seen.
 """
 
 from __future__ import annotations
@@ -87,6 +103,13 @@ from .ingest import (
     session_from_images,
 )
 from .io import load_fit, load_session, save_fit, save_session
+from .noisefloor import (
+    CornerNoise,
+    CorrelationProfile,
+    NoiseFloor,
+    anisotropy_floor,
+    measure_noise_floor,
+)
 from .diagnose import (
     Diagnosis,
     Finding,
@@ -113,6 +136,8 @@ __all__ = [
     "Checkerboard",
     "CircleGrid",
     "Conditioning",
+    "CornerNoise",
+    "CorrelationProfile",
     "CrossValidation",
     "DegenerateSystemError",
     "Diagnosis",
@@ -124,6 +149,7 @@ __all__ = [
     "HeldOutView",
     "IngestError",
     "InstrumentedFit",
+    "NoiseFloor",
     "ObservationSet",
     "PinholeBrownConrady",
     "Pose",
@@ -138,12 +164,14 @@ __all__ = [
     "ValidationError",
     "ViewObservations",
     "__version__",
+    "anisotropy_floor",
     "camera_from_dict",
     "cross_validate",
     "diagnose",
     "instrument",
     "load_fit",
     "load_session",
+    "measure_noise_floor",
     "read_calibration",
     "read_detections",
     "read_robot_poses",

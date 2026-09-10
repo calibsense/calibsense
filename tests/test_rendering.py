@@ -149,3 +149,55 @@ def test_fisheye_rendering_bends_straight_lines(fisheye, pinhole):
         target, pose, (1280, 720),
     )
     assert np.abs(curved.astype(int) - straight.astype(int)).mean() > 1.0
+
+
+def test_the_renderers_own_bias_dominates_a_fit_but_not_a_static_capture(pinhole, tmp_path):
+    """Quantifies open item 18, and demonstrates what the noise floor is for.
+
+    The renderer interpolates twice, which leaves a deterministic sub-pixel
+    error. In a multi-pose capture that error varies per view and lands in the
+    residuals looking exactly like noise, so the fit's `sigma` reports it as
+    such — at zero sensor noise the fit still claims a sigma. In a static
+    capture the same error is identical in every frame, so it cancels out of the
+    scatter and the measured floor sees only the sensor.
+
+    If this ever fails because the fit's sigma tracks the sensor noise, the
+    renderer's bias has been fixed and item 18 can be closed.
+    """
+    from caltrust import instrument, measure_noise_floor
+    from caltrust.ingest import detect_in_images, find_images, session_from_images
+    from caltrust.synthetic import diverse_poses
+
+    from .rendering import write_static_capture, write_views
+
+    target = Checkerboard(9, 6, 25.0)
+    poses = diverse_poses(
+        target, 14, distances_mm=(450.0, 700.0, 1000.0),
+        max_tilt_rad=0.55, lateral_mm=100.0, seed=3,
+    )
+
+    def fit_sigma(noise):
+        directory = tmp_path / f"cal{noise}"
+        write_views(str(directory), pinhole, target, poses, (1280, 720),
+                    noise=noise, blur=1.0)
+        return instrument(session_from_images(str(directory), target)).covariance.sigma
+
+    def floor_sigma(noise):
+        directory = tmp_path / f"static{noise}"
+        write_static_capture(
+            str(directory), pinhole, target,
+            pose_for_view(target, 700.0, tilt_rad=0.25), 40, (1280, 720),
+            noise=noise, blur=1.0, seed=500,
+        )
+        observations = detect_in_images(find_images(str(directory)), target)
+        return measure_noise_floor(observations).irreducible_sigma_px
+
+    # A fit reports a sigma even with no sensor noise at all: that is the
+    # renderer, not the sensor.
+    assert fit_sigma(0.0) > 0.05
+    # And it does not grow with sensor noise, because the bias dominates.
+    assert fit_sigma(8.0) < fit_sigma(0.0) * 1.2
+    # The static capture does track the sensor, roughly in proportion.
+    quiet, loud = floor_sigma(2.0), floor_sigma(8.0)
+    assert loud > quiet * 1.5
+    assert loud < fit_sigma(0.0)

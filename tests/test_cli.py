@@ -481,3 +481,95 @@ def test_help_mentions_the_task_shorthand(capsys):
     with pytest.raises(SystemExit):
         main(["--help"])
     assert "task shorthand" in capsys.readouterr().out
+
+
+@pytest.fixture
+def static_images(tmp_path, pinhole):
+    """Forty frames of one pose, differing only by sensor noise."""
+    from caltrust.synthetic import pose_for_view
+
+    from .rendering import write_static_capture
+
+    directory = tmp_path / "static"
+    write_static_capture(
+        str(directory), pinhole, BOARD, pose_for_view(BOARD, 700.0, tilt_rad=0.25),
+        40, (1280, 720), noise=4.0, blur=1.0, seed=100,
+    )
+    return directory
+
+
+def test_noise_floor_measures_the_real_detector(static_images, capsys):
+    assert main(["noise-floor", "--images", str(static_images),
+                 "--target", TARGET, "--quiet"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "40 static frames" in out
+    assert "independent" in out
+    # A sub-pixel refiner on a static scene should land far inside a pixel; if
+    # this ever fails the capture was not static.
+    scale = [line for line in out.splitlines() if line.startswith("scale")][0]
+    assert float(scale.split()[1]) < 0.2
+
+
+def test_noise_floor_writes_json(static_images, tmp_path, capsys):
+    path = tmp_path / "floor.json"
+    assert main(["noise-floor", "--images", str(static_images), "--target", TARGET,
+                 "-o", str(path), "--quiet"]) == EXIT_OK
+    capsys.readouterr()
+    data = json.loads(path.read_text())
+    assert data["n_frames"] == 40
+    assert data["n_corners"] == BOARD.num_points
+    assert data["trustworthy_covariance"] is True
+    assert 0.0 < data["sigma_for_propagation"] < 0.2
+    assert data["anisotropy_floor"] == pytest.approx(1.21, abs=0.02)
+
+
+def test_noise_floor_json_to_stdout_is_parseable(static_images, capsys):
+    assert main(["noise-floor", "--images", str(static_images), "--target", TARGET,
+                 "--json", "--quiet"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["n_frames"] == 40
+
+
+def test_noise_floor_refuses_a_capture_that_moved(images, capsys):
+    # The `images` fixture is ten different poses, which is a calibration
+    # capture and not a static one.
+    assert main(["noise-floor", "--images", str(images),
+                 "--target", TARGET, "--quiet"]) == EXIT_INPUT
+    assert "static" in capsys.readouterr().err.lower()
+
+
+def test_report_accepts_a_measured_noise_figure(session_file, tmp_path, capsys):
+    """The measured sigma has to be able to reach the millimetres.
+
+    `noise-floor` reports a sigma that assumes nothing about the model. It is
+    only worth measuring if the report can then propagate it instead of the one
+    the fit infers from its own residuals.
+    """
+    def millimetres(noise_px):
+        path = tmp_path / f"report-{noise_px}.json"
+        args = ["report", str(session_file), "--json", str(path), "--seed", "0"]
+        if noise_px is not None:
+            args += ["--noise-px", str(noise_px)]
+        assert main(args) in (EXIT_OK, EXIT_FINDINGS)
+        capsys.readouterr()
+        task = json.loads(path.read_text())["tasks"][0]
+        quantity = task["quantities"][0]
+        return (
+            task["observation_noise_px"],
+            quantity["parameters_only"]["expected_error"],
+            quantity["noise_only"]["expected_error"],
+        )
+
+    default = millimetres(None)
+    quiet = millimetres(0.01)
+    loud = millimetres(1.0)
+
+    # Without the flag the report uses the fit's own residual sigma; with it,
+    # the figure given.
+    assert quiet[0] == pytest.approx(0.01)
+    assert loud[0] == pytest.approx(1.0)
+    assert default[0] != pytest.approx(0.01)
+
+    # The calibration half does not depend on it; the pixel-noise half does,
+    # and moves in the direction the figure was pushed.
+    assert loud[1] == pytest.approx(default[1], rel=0.05)
+    assert loud[2] > default[2] > quiet[2]

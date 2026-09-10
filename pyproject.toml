@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,14 +8,14 @@ version = "0.1.0"
 description = "Metric trust for camera calibration: uncertainty, diagnosis and task-space error, not just a reprojection number"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "AGPL-3.0-only" }
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 authors = [{ name = "Abhishek Gola", email = "abhishekg5422@gmail.com" }]
 keywords = ["camera calibration", "uncertainty", "covariance", "metrology",
             "opencv", "photogrammetry", "computer vision"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
@@ -38,9 +38,6 @@ Homepage = "https://github.com/abhishek-gola/caltrust"
 
 [project.scripts]
 caltrust = "caltrust.cli.main:main"
-
-[tool.setuptools]
-license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 include = ["caltrust*"]

@@ -260,3 +260,47 @@ def write_views(
         cv2.imwrite(path, image)
         paths.append(path)
     return tuple(paths)
+
+
+def write_static_capture(
+    directory: str,
+    camera: CameraModel,
+    target: TargetSpec,
+    pose: Pose,
+    n_frames: int,
+    image_size: Tuple[int, int] = (1280, 720),
+    prefix: str = "static",
+    seed: int = 0,
+    **kwargs,
+) -> Tuple[str, ...]:
+    """Render one pose repeatedly, with independent sensor noise per frame.
+
+    This is the capture `caltrust noise-floor` expects: nothing moves, so every
+    difference between frames is the detector responding to sensor noise.
+    `write_views` cannot be used for it, because that passes one seed to every
+    frame and would write the same image `n_frames` times.
+
+    Args:
+        directory: Destination directory, created if missing.
+        camera: The intrinsics to render through.
+        target: The target to render.
+        pose: The single board-to-camera pose, held for every frame.
+        n_frames: Frames to write.
+        image_size: Output size as `(width, height)`.
+        prefix: Filename prefix.
+        seed: Base seed; frame `i` uses `seed + i`.
+        **kwargs: Passed to `render_view`, `noise` in particular.
+
+    Returns:
+        The paths written, in order.
+    """
+    import os
+
+    os.makedirs(directory, exist_ok=True)
+    paths = []
+    for index in range(n_frames):
+        image = render_view(camera, target, pose, image_size, seed=seed + index, **kwargs)
+        path = os.path.join(directory, f"{prefix}{index:03d}.png")
+        cv2.imwrite(path, image)
+        paths.append(path)
+    return tuple(paths)

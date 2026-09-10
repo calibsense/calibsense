@@ -168,10 +168,19 @@ def test_the_licence_file_is_the_real_agpl_text():
 
 
 def test_pyproject_declares_the_same_licence():
+    """PEP 639 form: an SPDX expression, not a table, and no classifier.
+
+    A `license` table and a `License ::` classifier both still build, but
+    setuptools deprecates them and a first release should not ship warnings.
+    """
     text = (REPO / "pyproject.toml").read_text()
-    assert 'license = { text = "AGPL-3.0-only" }' in text
-    assert "GNU Affero General Public License v3" in text
-    assert 'license-files = ["LICENSE"]' in text
+    assert 'license = "AGPL-3.0-only"' in text
+    # Under PEP 639 both keys belong to [project]; setuptools warns if
+    # `license-files` is left behind in [tool.setuptools].
+    project = text.split("[tool.setuptools")[0]
+    assert 'license-files = ["LICENSE"]' in project
+    # The expression carries the licence now, so the classifier is redundant.
+    assert "License :: OSI Approved" not in text
 
 
 def test_every_source_file_carries_the_spdx_header():

@@ -293,6 +293,7 @@ def run_audit(
     mounting: Optional[str] = None,
     seed: Optional[int] = 0,
     forecast_samples: int = 800,
+    observation_noise_px: Optional[float] = None,
 ) -> Audit:
     """Run the whole audit: refit, cross-validate, diagnose, propagate, forecast.
 
@@ -309,6 +310,11 @@ def run_audit(
         seed: Seed, so the whole report is reproducible.
         forecast_samples: Monte Carlo samples for the forecast, which is run at
             a lower count because it is a comparison rather than a claim.
+        observation_noise_px: Pixel noise to propagate, overriding the sigma the
+            fit infers from its own residuals. Pass
+            `NoiseFloor.sigma_for_propagation()` from `caltrust noise-floor` to
+            use a directly measured figure instead of one that assumes the
+            model is right.
 
     Returns:
         The audit.
@@ -332,7 +338,13 @@ def run_audit(
     diagnosis = diagnose(fit, observations, validation)
     chosen = tuple(tasks) if tasks else default_tasks(fit, observations)
     results = tuple(
-        propagate(fit, task, n_samples, seed=None if seed is None else seed + 101 * index)
+        propagate(
+            fit,
+            task,
+            n_samples,
+            observation_noise_px=observation_noise_px,
+            seed=None if seed is None else seed + 101 * index,
+        )
         for index, task in enumerate(chosen)
     )
 
