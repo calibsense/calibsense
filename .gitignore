@@ -12,3 +12,7 @@ htmlcov/
 docs/api/
 .DS_Store
 dist_wheel/
+
+# Local development notes, deliberately untracked.
+tracker.md
+open-items.md

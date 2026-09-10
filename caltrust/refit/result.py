@@ -301,14 +301,31 @@ class InstrumentedFit:
             f"rank {self.conditioning.rank}/{self.conditioning.n_intrinsic}",
         ]
         robust = covariance.robust
+        # The ratio only means anything where the noise-model diagnostic would
+        # itself interpret it. Away from an optimum the per-view scores carry a
+        # gradient that inflates it on its own, and on an unidentifiable fit both
+        # estimates drop the same null space, so they agree about a subspace
+        # rather than about the noise. Printing the number in either case would
+        # be exactly the silent wrongness this tool exists to catch.
         if robust is not None and robust.usable:
-            worst_inflation = covariance.worst_robust_inflation()
-            lines.append(
-                f"noise model  view-clustered deviations are "
-                f"{worst_inflation:.2f}x the classical ones at worst, over "
-                f"{robust.n_clusters} views"
-                + ("" if worst_inflation < 1.4 else "  (see the noise model finding)")
-            )
+            if not self.at_optimum:
+                lines.append(
+                    "noise model  not checked: these parameters are not at an "
+                    "optimum, and the check is only meaningful at one"
+                )
+            elif not self.conditioning.identifiable:
+                lines.append(
+                    "noise model  not checked: this capture does not determine "
+                    "every parameter, which the check cannot see past"
+                )
+            else:
+                worst_inflation = covariance.worst_robust_inflation()
+                lines.append(
+                    f"noise model  view-clustered deviations are "
+                    f"{worst_inflation:.2f}x the classical ones at worst, over "
+                    f"{robust.n_clusters} views"
+                    + ("" if worst_inflation < 1.4 else "  (see the noise model finding)")
+                )
         if not self.conditioning.identifiable:
             lines.append(
                 "IDENTIFIABILITY  this capture does not determine every parameter; "

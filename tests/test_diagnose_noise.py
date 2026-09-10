@@ -148,6 +148,13 @@ def test_the_metrics_carry_both_deviation_sets():
     robust = np.asarray(finding.metrics["robust_std"])
     assert classical.shape == robust.shape == (len(names),)
     assert np.all(classical > 0) and np.all(robust > 0)
+    # The deviation arrays are positional while `inflation` is a dict, so the
+    # row order has to be stated rather than guessed from the dict's keys.
+    assert tuple(finding.metrics["names"]) == tuple(names)
+    for i, name in enumerate(finding.metrics["names"]):
+        assert finding.metrics["inflation"][name] == pytest.approx(
+            robust[i] / classical[i]
+        )
 
 
 def test_the_summary_reports_the_worst_parameter_by_name():
@@ -158,3 +165,33 @@ def test_the_summary_reports_the_worst_parameter_by_name():
     assert finding.metrics["inflation"][worst] == pytest.approx(
         finding.metrics["worst_inflation"]
     )
+
+
+def test_the_summary_line_agrees_with_the_diagnostic():
+    """The one-line summary must not quote a ratio the finding would refuse to.
+
+    `summary_lines` is read far more often than the full report, so a number
+    printed there without the diagnostic's guards would be exactly the silent
+    wrongness this tool exists to catch.
+    """
+    healthy = rigs.healthy()
+    line = next(l for l in healthy.fit.summary_lines() if "noise model" in l)
+    assert "view-clustered deviations are" in line
+
+    # Away from an optimum the scores carry a gradient that inflates the ratio.
+    off = dataclasses.replace(healthy.fit, relative_decrement=1e-2)
+    line = next(l for l in off.summary_lines() if "noise model" in l)
+    assert "not checked" in line and "optimum" in line
+
+    # On an unidentifiable fit both estimates drop the same null space.
+    line = next(
+        l for l in rigs.frontoparallel().fit.summary_lines() if "noise model" in l
+    )
+    assert "not checked" in line and "determine" in line
+
+
+def test_a_capture_with_too_few_views_prints_no_noise_line():
+    """Below the cluster floor there is nothing honest to say, so nothing is said."""
+    fit = rigs.context(pose_set=rigs.poses(n=6)).fit
+    assert not fit.covariance.robust.usable
+    assert not any("noise model" in l for l in fit.summary_lines())

@@ -135,6 +135,10 @@ class NoiseModelValidity(Diagnostic):
                 name: (float(r) if np.isfinite(r) else None)
                 for name, r in zip(names, ratios)
             },
+            # Named, because `inflation` is a dict and these are positional:
+            # a JSON consumer that zipped them against the dict's key order
+            # would silently pair the wrong parameter with the wrong deviation.
+            names=list(names),
             classical_std=covariance.intrinsic_std().tolist(),
             robust_std=robust.std().tolist(),
         )
