@@ -232,7 +232,8 @@ def test_the_version_flag_states_the_licence():
 def test_no_stale_permissive_licence_claim_remains():
     """The project was Apache-2.0 first; a leftover claim would be a real problem."""
     offenders = []
-    for name in ("README.md", "pyproject.toml", "tracker.md", "open-items.md"):
+    for name in ("README.md", "pyproject.toml", "tracker.md", "open-items.md",
+                 "limitations.md"):
         path = REPO / name
         if not path.exists():
             continue

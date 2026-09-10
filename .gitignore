@@ -15,4 +15,5 @@ dist_wheel/
 
 # Local development notes, deliberately untracked.
 tracker.md
+limitations.md
 open-items.md
