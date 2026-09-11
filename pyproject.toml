@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "calibsense"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Measurement uncertainty for camera calibration: covariance, diagnosis and task-space error, not just a reprojection number"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -38,6 +38,9 @@ Homepage = "https://github.com/calibsense/calibsense"
 
 [project.scripts]
 calibsense = "calibsense.cli.main:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "calibsense._version.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["calibsense*"]

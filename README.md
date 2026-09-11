@@ -45,8 +45,12 @@ rank-deficient fit reports false confidence, not a wide error bar.
 ## Install
 
 ```sh
-pip install .
+pip install calibsense
 ```
+
+The current release is `0.1.0a1`, a pre-release. It is the complete tool and its
+test suite passes, but treat the API as unsettled until `0.1.0`. Install from a
+checkout with `pip install .` instead.
 
 Three runtime dependencies: `numpy`, `opencv-contrib-python`, `pyyaml`. Python
 3.9 or newer. `make binary` produces `dist/calibsense`, a 64 MB single file that

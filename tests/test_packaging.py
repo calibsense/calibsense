@@ -59,9 +59,25 @@ def test_python_dash_m_runs_the_cli():
 
 
 def test_version_is_declared_once():
-    """`pyproject.toml` and `calibsense._version` must not drift apart."""
+    """The version lives in `calibsense._version` and nowhere else.
+
+    It used to be written out in `pyproject.toml` as well, and the two drifted:
+    a build went out numbered `0.1.0a1` while the CLI and every generated report
+    said `0.1.0`, because they read different sources. `pyproject.toml` now
+    derives it, so drift is impossible rather than merely asserted against.
+    """
     pyproject = (REPO / "pyproject.toml").read_text()
-    assert f'version = "{calibsense.__version__}"' in pyproject
+    assert 'dynamic = ["version"]' in pyproject
+    assert 'version = { attr = "calibsense._version.__version__" }' in pyproject
+    literal = [
+        line for line in pyproject.splitlines() if line.startswith('version = "')
+    ]
+    assert not literal, f"version is hard-coded again: {literal}"
+
+    # And what actually ships agrees with the module the CLI reads.
+    from importlib.metadata import version
+
+    assert version("calibsense") == calibsense.__version__
 
 
 def test_runtime_dependencies_stay_at_three():
