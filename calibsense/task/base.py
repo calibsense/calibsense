@@ -272,6 +272,9 @@ class TaskResult:
         observation_noise_px: Per-coordinate pixel noise used, in pixels.
         sampler_rank: Rank of the sampled covariance.
         sampler_size: Dimension of the sampled covariance.
+        intrinsic_inflation: How much wider the sampled intrinsic block was than
+            the classical one, because the between-view scatter said the noise
+            model understated it on this capture. One means it did not.
     """
 
     task: Task
@@ -283,6 +286,7 @@ class TaskResult:
     observation_noise_px: float
     sampler_rank: int
     sampler_size: int
+    intrinsic_inflation: float = 1.0
 
     @property
     def n_samples(self) -> int:
@@ -394,6 +398,12 @@ class TaskResult:
                 f"{self.parameter_source_label} and {noise:.0%} from "
                 f"{self.observation_noise_px:.3g} px of pixel noise"
             )
+            if self.intrinsic_inflation > 1.05:
+                lines.append(
+                    f"    widened {self.intrinsic_inflation:.1f}x: the scatter "
+                    "between views is broader than the noise model predicted, "
+                    "so the intrinsics were sampled from that instead"
+                )
             if abs(distribution.bias) > 0.1 * max(distribution.std, 1e-12):
                 lines.append(
                     f"    the fitted value is offset from the distribution mean by "
@@ -412,6 +422,7 @@ class TaskResult:
             "sampler_rank": self.sampler_rank,
             "sampler_size": self.sampler_size,
             "parameter_source": self.parameter_source_label,
+            "intrinsic_inflation": self.intrinsic_inflation,
             "quantities": [
                 {
                     **self.distribution(q.name).to_dict(level),

@@ -112,6 +112,65 @@ def joint_covariance(
     return 0.5 * (joint + joint.T), tuple(names)
 
 
+def with_intrinsic_block(
+    joint: np.ndarray, p: int, intrinsic: np.ndarray, rcond: float = SAMPLING_RCOND
+) -> np.ndarray:
+    """Rebuild a joint covariance around a different intrinsic block.
+
+    Swapping the top-left block in place would leave a matrix that is no longer
+    a covariance: the cross and pose blocks were derived from the block being
+    replaced, and left untouched they can make the result indefinite. What is
+    preserved instead is the *conditional* structure, which is the part the
+    substitution says nothing about.
+
+    Write the classical joint as `[[A, C], [C', P]]`. The poses' regression on
+    the intrinsics is `B = A^+ C` and their conditional covariance is
+    `P - C' A^+ C`; neither involves the marginal spread of the intrinsics.
+    Keeping both and putting `A_w` in the marginal's place gives
+
+        [[A_w,     A_w B     ],
+         [B' A_w,  P - C' A^+ C + B' A_w B]]
+
+    which is `M diag(A_w, P - C' A^+ C) M'` for `M = [[I, 0], [B', I]]`, so it
+    is positive semi-definite whenever both diagonal blocks are, and it reduces
+    to the original joint exactly when `A_w` is `A`. To first order — the order
+    the covariance was linearised at in the first place — this is the same
+    distribution with a wider intrinsic marginal.
+
+    Args:
+        joint: The classical joint covariance.
+        p: Number of intrinsic rows, which the block boundary sits after.
+        intrinsic: The replacement `(p, p)` intrinsic block.
+        rcond: Cut for the pseudo-inverse of the original intrinsic block.
+
+    Returns:
+        The rebuilt joint covariance, symmetrised.
+
+    Raises:
+        ValidationError: The replacement is the wrong shape.
+    """
+    replacement = np.asarray(intrinsic, dtype=float)
+    if replacement.shape != (p, p):
+        raise ValidationError(
+            f"intrinsic block is {replacement.shape}, expected {(p, p)}"
+        )
+    if p == joint.shape[0]:
+        return 0.5 * (replacement + replacement.T)
+
+    original = joint[:p, :p]
+    cross = joint[:p, p:]
+    poses = joint[p:, p:]
+    regression = np.linalg.pinv(original, rcond=rcond) @ cross
+    conditional = poses - cross.T @ regression
+
+    rebuilt = np.empty_like(joint)
+    rebuilt[:p, :p] = replacement
+    rebuilt[:p, p:] = replacement @ regression
+    rebuilt[p:, :p] = rebuilt[:p, p:].T
+    rebuilt[p:, p:] = conditional + regression.T @ replacement @ regression
+    return 0.5 * (rebuilt + rebuilt.T)
+
+
 def factorise(
     matrix: np.ndarray, rcond: float = SAMPLING_RCOND
 ) -> Tuple[np.ndarray, int]:
@@ -147,6 +206,9 @@ class CovarianceSampler:
             space. `False` means the fit left a direction unconstrained, so the
             samples understate the true spread and any interval derived from
             them is a lower bound.
+        inflation: How much the intrinsic block was widened by the view-clustered
+            estimate before sampling. One means the noise model held on this
+            capture and the classical covariance was sampled unchanged.
     """
 
     def __init__(
@@ -155,6 +217,7 @@ class CovarianceSampler:
         view_indices: Sequence[int] = (),
         seed: Optional[int] = 0,
         hand_eye: Optional["HandEyeResult"] = None,
+        widen: bool = True,
     ):
         self.fit = fit
         self.hand_eye = hand_eye
@@ -166,6 +229,13 @@ class CovarianceSampler:
         self._covariance, self.names = joint_covariance(
             fit.covariance, self.view_indices
         )
+        self.inflation = 1.0
+        if widen:
+            widened, self.inflation = fit.covariance.widened_intrinsic()
+            if self.inflation > 1.0:
+                self._covariance = with_intrinsic_block(
+                    self._covariance, fit.covariance.n_intrinsic, widened
+                )
         self._factor, self.rank = factorise(self._covariance)
         self._block = parameter_block(fit.camera, fit.options)
         self._reduction = self._block.reduction()

@@ -28,9 +28,11 @@ from calibsense.cli.main import (
     main,
 )
 from calibsense.core.target import Checkerboard
+from calibsense.ingest import read_calibration
 from calibsense.io import load_fit, load_session
 from calibsense.synthetic import diverse_poses
 
+from . import rigs
 from .rendering import write_views
 
 TARGET = "checkerboard:9x6:25mm"
@@ -158,6 +160,42 @@ def test_refit_writes_a_fit_bundle(tmp_path, session_file, capsys):
     fit = load_fit(str(path))
     assert fit.n_views == 10
     assert fit.conditioning.identifiable
+
+
+@pytest.mark.slow
+def test_refit_writes_the_intrinsics_back_out(tmp_path, session_file, capsys):
+    """The refit always produces intrinsics, so it can always hand them over."""
+    path = tmp_path / "calibration.yml"
+    assert main(["refit", str(session_file), "--calibration-out", str(path)]) == EXIT_OK
+    assert f"wrote {path}" in capsys.readouterr().out
+    record = read_calibration(str(path))
+    assert record.camera.kind == "pinhole_brown_conrady"
+    assert not record.metadata["model_ambiguous"]
+
+
+@pytest.mark.slow
+def test_the_calibration_format_can_be_forced_past_the_extension(
+    tmp_path, session_file, capsys
+):
+    path = tmp_path / "camera_info.yaml"
+    assert main([
+        "refit", str(session_file), "--calibration-out", str(path),
+        "--calibration-out-format", "ros",
+    ]) == EXIT_OK
+    capsys.readouterr()
+    assert "distortion_model: plumb_bob" in path.read_text()
+
+
+@pytest.mark.slow
+def test_report_writes_the_intrinsics_alongside_the_pdf(tmp_path, session_file, capsys):
+    path = tmp_path / "calibration.json"
+    assert main([
+        "report", str(session_file), "--calibration-out", str(path),
+        "--camera-name", "line3", "--samples", "64",
+    ]) in (EXIT_OK, EXIT_FINDINGS)
+    assert f"wrote {path}" in capsys.readouterr().out
+    record = read_calibration(str(path))
+    assert record.metadata["camera_name"] == "line3"
 
 
 @pytest.mark.slow
@@ -573,3 +611,60 @@ def test_report_accepts_a_measured_noise_figure(session_file, tmp_path, capsys):
     # and moves in the direction the figure was pushed.
     assert loud[1] == pytest.approx(default[1], rel=0.05)
     assert loud[2] > default[2] > quiet[2]
+
+
+@pytest.mark.slow
+def test_no_widen_gives_back_the_classical_interval(tmp_path, session_file, capsys):
+    """The widening is a judgement call, so it has to be refusable.
+
+    It is on by default because a capture with correlated corner noise otherwise
+    reports millimetres several times too tight. The cost is that a capture
+    whose noise model holds pays a premium it does not need, and someone doing
+    acceptance testing against a tolerance has a real interest in seeing the
+    unwidened figure rather than reasoning about it.
+    """
+    def interval(extra):
+        path = tmp_path / f"report{'-plain' if extra else ''}.json"
+        assert main([
+            "report", str(session_file), "--json", str(path), "--seed", "0",
+            "--samples", "400", *extra,
+        ]) in (EXIT_OK, EXIT_FINDINGS)
+        capsys.readouterr()
+        task = json.loads(path.read_text())["tasks"][0]
+        return task["intrinsic_inflation"], task["quantities"][0]["expected_error"]
+
+    widened_factor, widened = interval([])
+    plain_factor, plain = interval(["--no-widen"])
+
+    assert plain_factor == 1.0
+    assert widened_factor > 1.0
+    assert widened > plain
+
+
+@pytest.mark.slow
+def test_a_measured_noise_figure_survives_a_base_frame_task(tmp_path, capsys):
+    """`--noise-px` used to be dropped whenever the task needed a hand-eye solve.
+
+    A base-frame task runs the audit twice, once to get the hand-eye transform
+    and once with the real tasks, and the second call did not pass the measured
+    sigma through. Someone who went to the trouble of capturing a noise floor
+    got a report that quietly ignored it.
+    """
+    from calibsense.io import save_session
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    path = tmp_path / "robot.npz"
+    save_session(session, str(path))
+
+    def noise_used(noise_px):
+        out = tmp_path / f"base-{noise_px}.json"
+        assert main([
+            "report", str(path), "--task", "base:800mm", "--mounting", "eye_in_hand",
+            "--json", str(out), "--samples", "200", "--seed", "0",
+            "--noise-px", str(noise_px),
+        ]) in (EXIT_OK, EXIT_FINDINGS)
+        capsys.readouterr()
+        return json.loads(out.read_text())["tasks"][0]["observation_noise_px"]
+
+    assert noise_used(0.01) == pytest.approx(0.01)
+    assert noise_used(0.5) == pytest.approx(0.5)

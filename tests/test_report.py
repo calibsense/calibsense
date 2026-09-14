@@ -267,18 +267,24 @@ def test_a_healthy_audit_calls_its_reprojection_error_honest(good_audit):
 
 @pytest.mark.slow
 def test_correlated_noise_makes_the_whole_audit_untrustworthy(correlated_audit):
-    """`trustworthy` has to cover every way the figures become a bound.
+    """`trustworthy` has to cover every way the figures stop being plain answers.
 
-    A reader who branches on this flag would otherwise ship a calibration whose
-    intervals the report itself says are several times too tight, because the
-    flag used to mean identifiability alone and this capture is identifiable.
+    The intervals are no longer too tight — the propagation widens them — but a
+    reader who branches on this flag still needs to know that the widening came
+    from the scatter between views rather than from a noise model, and that
+    widening an interval does not improve the calibration inside it.
+
+    The banner names no cause on purpose. The check behind it compares two
+    covariances, which says the model and the data disagree without saying which
+    part of the model is wrong; correlated noise is one candidate and a
+    constraint the camera does not satisfy is another.
     """
     assert correlated_audit.fit.conditioning.identifiable
     assert not correlated_audit.trustworthy
     caveats = correlated_audit.caveats()
     assert len(caveats) == 1
-    assert "corner noise is correlated" in caveats[0]
-    assert "too tight" in caveats[0]
+    assert "does not describe this capture" in caveats[0]
+    assert "widened" in caveats[0]
 
 
 @pytest.mark.slow
@@ -289,8 +295,8 @@ def test_the_caveats_reach_the_json_and_both_renderers(correlated_audit):
     assert payload["trustworthy"] is False
     assert payload["caveats"] == list(correlated_audit.caveats())
 
-    assert "CORNER NOISE IS CORRELATED" in render_text(correlated_audit)
-    assert b"CORNER NOISE IS CORRELATED" in pdf_streams(render_pdf(correlated_audit))[0]
+    assert "DOES NOT DESCRIBE THIS CAPTURE" in render_text(correlated_audit)
+    assert b"DOES NOT DESCRIBE THIS CAPTURE" in pdf_streams(render_pdf(correlated_audit))[0]
 
 
 @pytest.mark.slow

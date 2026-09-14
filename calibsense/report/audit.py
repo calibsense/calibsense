@@ -147,15 +147,26 @@ class Audit:
         return not self.caveats()
 
     def caveats(self) -> Tuple[str, ...]:
-        """Why every figure in this report is a bound rather than an answer.
+        """Why the figures in this report cannot simply be read at face value.
 
-        Two conditions qualify, and they fail in the same direction for
-        different reasons. An unidentifiable calibration leaves a parameter
-        direction with no variance at all, so every interval derived from it is
-        narrower than the truth. Correlated corner noise leaves the covariance
-        itself measurably too tight, which the noise model finding quantifies.
-        Both mean the same thing to a reader — the figures understate — so both
-        belong in the banner the report opens with.
+        Two conditions qualify, and they are no longer the same condition. An
+        unidentifiable calibration leaves a parameter direction with no variance
+        at all, so every interval derived from it is narrower than the truth and
+        nothing in the pipeline can repair that.
+
+        A failed noise-model check used to belong in the same sentence. It no
+        longer does: the task-space propagation now samples from the
+        view-clustered covariance wherever that is wider, so the millimetres are
+        widened rather than merely annotated. What survives is a different
+        warning — the interval is now resting on the scatter between views
+        rather than on a noise model, the point estimate is not improved by
+        widening the interval around it, and an error shared by every view stays
+        invisible to a between-view estimate either way.
+
+        The banner deliberately does not name a cause. The check that raised it
+        compares two covariances, which detects that the model and the data
+        disagree without saying which part of the model is wrong; the finding
+        itself lists the candidates in the order they are worth ruling out.
 
         Returns:
             One sentence per condition, worst first, or an empty tuple when
@@ -176,10 +187,10 @@ class Audit:
             if finding.severity < Severity.CRITICAL:
                 continue
             factor = finding.metrics.get("worst_inflation")
-            scale = f" by about {factor:.1f}x" if factor else ""
+            scale = f" up to {factor:.1f}x" if factor else ""
             reasons.append(
-                "The corner noise is correlated - every figure below is too "
-                f"tight{scale}"
+                "The model does not describe this capture - the intervals "
+                f"below are widened{scale}"
             )
         return tuple(reasons)
 
@@ -294,6 +305,7 @@ def run_audit(
     seed: Optional[int] = 0,
     forecast_samples: int = 800,
     observation_noise_px: Optional[float] = None,
+    widen: bool = True,
 ) -> Audit:
     """Run the whole audit: refit, cross-validate, diagnose, propagate, forecast.
 
@@ -315,6 +327,15 @@ def run_audit(
             `NoiseFloor.sigma_for_propagation()` from `calibsense noise-floor` to
             use a directly measured figure instead of one that assumes the
             model is right.
+        widen: Propagate from the view-clustered covariance wherever it is wider
+            than the classical one. On by default, because a capture whose
+            corner noise is correlated, or whose model is wrong in some other
+            way, otherwise reports millimetres that are several times too
+            tight. `False` propagates the classical covariance
+            exactly as the residual noise model asserts it, which is the right
+            choice only when you have independent reason to believe that model —
+            a measured noise floor, say — and need the figure not to carry the
+            correction's deliberate conservatism.
 
     Returns:
         The audit.
@@ -344,6 +365,7 @@ def run_audit(
             n_samples,
             observation_noise_px=observation_noise_px,
             seed=None if seed is None else seed + 101 * index,
+            widen=widen,
         )
         for index, task in enumerate(chosen)
     )

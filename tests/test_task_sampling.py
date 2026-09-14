@@ -22,6 +22,7 @@ from calibsense.task.sampling import (
     ParameterSample,
     factorise,
     joint_covariance,
+    with_intrinsic_block,
 )
 
 from . import rigs
@@ -164,8 +165,10 @@ def test_draw_rejects_a_non_positive_count():
 
 
 def test_marginal_std_matches_the_covariance_diagonal():
+    """With the widening off, the sampler is the covariance and nothing else."""
     fit = rigs.healthy().fit
-    sampler = CovarianceSampler(fit, view_indices=(0,), seed=0)
+    sampler = CovarianceSampler(fit, view_indices=(0,), seed=0, widen=False)
+    assert sampler.inflation == 1.0
     assert np.allclose(
         sampler.marginal_std()[: fit.covariance.n_intrinsic],
         fit.covariance.intrinsic_std(),
@@ -185,3 +188,99 @@ def test_hand_eye_is_sampled_when_supplied():
     offsets = np.array([d.hand_eye.translation for d in draws])
     assert offsets.std(axis=0).max() > 0
     assert sampler.nominal().hand_eye is result.camera
+
+
+# --------------------------------------------------------------------------
+# widening the intrinsic block when the noise model does not hold
+# --------------------------------------------------------------------------
+
+def test_widening_costs_a_premium_and_not_a_multiple_when_the_noise_model_holds():
+    """The check that only ever fires is not a check.
+
+    The leverage correction in the view-clustered estimate is deliberately
+    conservative, so a capture whose noise model holds perfectly still pays
+    something here — measured at about a fifth, against the factor of eight the
+    correction exists to catch. What must not happen is the premium turning into
+    a multiple.
+    """
+    fit = rigs.healthy().fit
+    classical = CovarianceSampler(fit, view_indices=(0, 1), seed=0, widen=False)
+    widened = CovarianceSampler(fit, view_indices=(0, 1), seed=0, widen=True)
+    assert widened.inflation < 1.4
+    ratio = widened.marginal_std() / classical.marginal_std()
+    assert ratio.max() < 1.4
+
+
+def test_widening_never_narrows_any_direction():
+    """Clamping at one is what makes this safe to leave on by default.
+
+    The sandwich is mildly optimistic at low view counts, so substituting it
+    wholesale would shrink the intervals on a clean short capture on the
+    strength of a noisy estimate. Widening only where there is evidence to
+    widen cannot make a report overconfident.
+    """
+    for fit in (rigs.healthy().fit, rigs.with_correlated_noise().fit):
+        classical, _ = joint_covariance(fit.covariance, (0, 1))
+        widened_block, factor = fit.covariance.widened_intrinsic()
+        rebuilt = with_intrinsic_block(
+            classical, fit.covariance.n_intrinsic, widened_block
+        )
+        difference = np.linalg.eigvalsh(rebuilt - classical)
+        scale = np.trace(classical) / classical.shape[0]
+        assert difference.min() > -1e-8 * scale, factor
+
+
+def test_widening_is_the_identity_when_the_block_is_unchanged():
+    """`with_intrinsic_block` must reproduce the joint it was given."""
+    fit = rigs.healthy().fit
+    classical, _ = joint_covariance(fit.covariance, (0, 2))
+    rebuilt = with_intrinsic_block(
+        classical, fit.covariance.n_intrinsic, fit.covariance.intrinsic
+    )
+    assert np.allclose(rebuilt, classical, atol=1e-9 * np.abs(classical).max())
+
+
+def test_the_rebuilt_joint_stays_a_covariance():
+    """A joint whose blocks disagree is not sampleable, however honest it is."""
+    fit = rigs.with_correlated_noise().fit
+    classical, _ = joint_covariance(fit.covariance, (0, 1, 2))
+    block, _ = fit.covariance.widened_intrinsic()
+    rebuilt = with_intrinsic_block(classical, fit.covariance.n_intrinsic, block)
+    assert np.allclose(rebuilt, rebuilt.T)
+    smallest = np.linalg.eigvalsh(rebuilt).min()
+    assert smallest > -1e-8 * np.trace(rebuilt) / rebuilt.shape[0]
+
+
+def test_a_replacement_of_the_wrong_shape_is_refused():
+    fit = rigs.healthy().fit
+    classical, _ = joint_covariance(fit.covariance, (0,))
+    with pytest.raises(ValidationError, match="intrinsic block is"):
+        with_intrinsic_block(classical, fit.covariance.n_intrinsic, np.eye(2))
+
+
+def test_correlated_noise_widens_the_sampled_intrinsics_severalfold():
+    """The whole point of item 1b: the finding's factor now reaches the sampler."""
+    fit = rigs.with_correlated_noise(length_px=200.0).fit
+    classical = CovarianceSampler(fit, view_indices=(0,), seed=0, widen=False)
+    widened = CovarianceSampler(fit, view_indices=(0,), seed=0, widen=True)
+    assert widened.inflation > 3.0
+    assert classical.inflation == 1.0
+    p = fit.covariance.n_intrinsic
+    ratio = widened.marginal_std()[:p] / classical.marginal_std()[:p]
+    assert ratio.min() > 2.0
+
+
+def test_too_few_views_leaves_the_covariance_alone():
+    """Below ten clusters the sandwich is noise, so it must not touch anything."""
+    from calibsense.core.session import CalibrationSession
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.synthetic import diverse_poses, synthesise
+
+    capture = synthesise(
+        rigs.WIDE_PINHOLE, rigs.BOARD, diverse_poses(rigs.BOARD, 6, seed=3),
+        rigs.IMAGE_SIZE, noise_px=0.2, seed=5,
+    )
+    fit = instrument(CalibrationSession(observations=capture.observations), RefitOptions())
+    assert not fit.covariance.robust.usable
+    sampler = CovarianceSampler(fit, seed=0, widen=True)
+    assert sampler.inflation == 1.0

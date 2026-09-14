@@ -48,6 +48,7 @@ def propagate(
     n_samples: int = DEFAULT_SAMPLES,
     observation_noise_px: Optional[float] = None,
     seed: Optional[int] = 0,
+    widen: bool = True,
 ) -> TaskResult:
     """Propagate a calibration's uncertainty into a task's units.
 
@@ -60,6 +61,11 @@ def propagate(
             calibsense actually measured on this camera. Pass `0.0` to isolate the
             calibration's contribution.
         seed: Seed, so a report is reproducible.
+        widen: Widen the intrinsic covariance to the view-clustered estimate
+            wherever that estimate is broader, so a capture whose corner noise
+            is correlated gets an interval that reflects it rather than a
+            footnote saying it should have. Pass `False` to propagate the
+            classical covariance exactly as the noise model asserts it.
 
     Returns:
         The measurement distribution, split by source.
@@ -80,7 +86,9 @@ def propagate(
             f"observation noise must be finite and non-negative, got {noise_px}"
         )
 
-    sampler = CovarianceSampler(fit, task.view_indices(), seed, task.hand_eye())
+    sampler = CovarianceSampler(
+        fit, task.view_indices(), seed, task.hand_eye(), widen=widen
+    )
     nominal_sample = sampler.nominal()
     observations = task.observe(nominal_sample)
     nominal = np.asarray(task.measure(nominal_sample, observations), dtype=float)
@@ -121,6 +129,7 @@ def propagate(
         observation_noise_px=noise_px,
         sampler_rank=sampler.rank,
         sampler_size=sampler.n_free,
+        intrinsic_inflation=sampler.inflation,
     )
 
 
@@ -130,6 +139,7 @@ def propagate_all(
     n_samples: int = DEFAULT_SAMPLES,
     observation_noise_px: Optional[float] = None,
     seed: Optional[int] = 0,
+    widen: bool = True,
 ) -> Tuple[TaskResult, ...]:
     """Propagate several tasks against one calibration.
 
@@ -147,7 +157,7 @@ def propagate_all(
     return tuple(
         propagate(
             fit, task, n_samples, observation_noise_px,
-            None if seed is None else seed + 7919 * index,
+            None if seed is None else seed + 7919 * index, widen,
         )
         for index, task in enumerate(tasks)
     )
