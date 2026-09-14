@@ -268,17 +268,22 @@ def diagnose_of(session, fit, result):
     )
 
 
+@pytest.mark.slow
 def test_a_healthy_pose_set_has_no_findings():
     """Nothing the pose set can be blamed for, which is not the same as nothing.
 
     The board-scale note is always present and is deliberately not a warning:
     it reports a systematic the tool cannot see rather than a defect in the
     capture, and no rearrangement of the poses would remove it.
+
+    Resampled rather than residual, unlike most of this file, because the
+    residual covariance now raises a warning of its own and every other test
+    here takes the cheap path for speed.
     """
-    session, fit, result = solved()
+    session, fit, result = solved(monte_carlo=True)
     diagnosis = diagnose_of(session, fit, result)
     assert not diagnosis.critical and not diagnosis.warnings
-    assert len(diagnosis.findings) == 5
+    assert len(diagnosis.findings) == 6
     assert [f.cause for f in diagnosis.findings if f.severity is not Severity.OK] == [
         "hand_eye_board_scale"
     ]
@@ -475,3 +480,39 @@ def test_a_perturbed_solve_that_will_not_converge_gives_no_sensitivity(monkeypat
     assert solve_module.board_scale_sensitivity(
         "eye_in_hand", robots, list(fit.poses), result.camera
     ) == 0.0
+
+
+def test_a_residual_only_covariance_is_a_warning_not_a_footnote():
+    """Labelling it in prose stopped being enough once the split depended on it.
+
+    The residual covariance understates the translation error threefold, which
+    on its own is a loose number rather than a wrong one. But the variance split
+    asks which of the camera and the hand-eye to spend on, and the share the
+    residual form hides is exactly the share being measured, so it answers "the
+    camera, entirely" whatever the truth is.
+    """
+    from calibsense.handeye.diagnose import diagnose_hand_eye
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    robots = list(session.robot.aligned_with(session.observations))
+
+    cheap = solve_hand_eye(fit, session, mounting="eye_in_hand", monte_carlo=False)
+    finding = next(
+        f for f in diagnose_hand_eye(cheap, robots, list(fit.poses)).findings
+        if f.cause == "hand_eye_covariance_basis"
+    )
+    assert finding.severity is Severity.WARNING
+    assert finding.metrics["covariance_method"] == "residual"
+    assert "variance split" in finding.action
+
+    honest = solve_hand_eye(
+        fit, session, mounting="eye_in_hand", monte_carlo=True, n_samples=60
+    )
+    clean = next(
+        f for f in diagnose_hand_eye(honest, robots, list(fit.poses)).findings
+        if f.cause == "hand_eye_covariance_basis"
+    )
+    assert clean.severity is Severity.OK
+    assert clean.metrics["optimism_factor"] > 1.5

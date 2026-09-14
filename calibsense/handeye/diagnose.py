@@ -227,6 +227,50 @@ def conditioning(context: HandEyeContext) -> Finding:
     )
 
 
+def covariance_basis(context: HandEyeContext) -> Finding:
+    """Is the uncertainty below the honest one or the cheap one?
+
+    The residual-based covariance treats the target-in-camera poses as exact
+    data. They are not: they come from the calibration, and their errors are
+    correlated across views because every view shares the same intrinsics, so a
+    focal-length error tilts and scales all of them coherently and does not
+    average down. Measured against known truth it gave 0.39 mm where the actual
+    error was 1.29 mm.
+
+    It used to be enough to label this in prose, because the number was merely
+    optimistic. It is not enough now. The variance split added in item 3c asks
+    which of the camera and the hand-eye to spend money on, and a residual-based
+    solve answers "the camera, entirely" regardless of the truth — the share it
+    hides is exactly the share being measured. A wrong number is worse than a
+    loose one, so this is a finding rather than a sentence.
+    """
+    result = context.result
+    if result.covariance_method != "residual":
+        return _finding(
+            "hand_eye_covariance_basis", "Hand-eye uncertainty basis", Severity.OK,
+            f"the covariance comes from {result.monte_carlo_samples} resampled "
+            f"calibrations, {result.optimism_factor():.1f}x wider than the "
+            "residual-only estimate it replaces",
+            covariance_method=result.covariance_method,
+            optimism_factor=float(result.optimism_factor()),
+        )
+    return _finding(
+        "hand_eye_covariance_basis", "Hand-eye uncertainty basis", Severity.WARNING,
+        "this covariance came from the residuals alone, which treats the "
+        "target-in-camera poses as exact when they came from the calibration; "
+        "measured against known truth it understated the translation error "
+        "threefold",
+        "Re-solve with the resampling covariance, which is the default — "
+        "`monte_carlo=False` was passed to get here. Note that this does not "
+        "only widen the interval: a variance split taken on a residual-based "
+        "solve attributes the whole error to the camera calibration and none to "
+        "the hand-eye, because the share it understates is the share being "
+        "measured.",
+        covariance_method=result.covariance_method,
+        optimism_factor=float(result.optimism_factor()),
+    )
+
+
 def board_scale(context: HandEyeContext) -> Finding:
     """Is a printed board's own error bigger than the interval being reported?
 
@@ -349,6 +393,7 @@ HAND_EYE_DIAGNOSTICS = (
     rotation_axis_spread,
     rotation_magnitude,
     conditioning,
+    covariance_basis,
     board_scale,
 )
 
