@@ -102,6 +102,24 @@ def propagate(
         )
 
     draws = sampler.draw(n_samples)
+    # When the covariance was widened, propagate the unwidened one too. The
+    # parameter-space inflation the finding reports is a maximum over the
+    # intrinsics and does not transfer to task units — a 1.5x there came out as
+    # 1.25x in millimetres — so without this the report prints a ratio that
+    # invites a multiplication it does not support. Drawing from the same seed
+    # gives both runs the same standard normals, so the ratio between them is
+    # a comparison rather than two independent estimates.
+    unwidened = None
+    if sampler.inflation > 1.0:
+        plain = CovarianceSampler(
+            fit, task.view_indices(), seed, task.hand_eye(), widen=False,
+            flange=task.flange_pose(),
+            flange_repeatability=task.flange_repeatability(),
+        )
+        unwidened = np.full((n_samples, n_quantities), np.nan)
+        for index, draw in enumerate(plain.draw(n_samples)):
+            unwidened[index] = _attempt(task, draw, observations, n_quantities)
+
     rng = np.random.default_rng(None if seed is None else seed + 1)
     perturbations = (
         rng.normal(0.0, noise_px, (n_samples,) + observations.shape)
@@ -172,6 +190,7 @@ def propagate(
         intrinsic_inflation=sampler.inflation,
         hand_eye_only=hand_eye_only,
         robot_only=robot_only,
+        unwidened_parameters=unwidened,
     )
 
 

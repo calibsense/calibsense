@@ -300,6 +300,9 @@ class TaskResult:
             is nothing to separate.
         robot_only: Samples with only the robot flange varying, when a
             repeatability was stated. `None` when the arm is taken as exact.
+        unwidened_parameters: Samples drawn from the classical covariance
+            instead of the widened one, for comparison. `None` when no widening
+            was applied, in which case the two would be identical.
     """
 
     task: Task
@@ -314,6 +317,7 @@ class TaskResult:
     intrinsic_inflation: float = 1.0
     hand_eye_only: Optional[np.ndarray] = None
     robot_only: Optional[np.ndarray] = None
+    unwidened_parameters: Optional[np.ndarray] = None
 
     @property
     def n_samples(self) -> int:
@@ -467,6 +471,37 @@ class TaskResult:
             "pixel_noise": noise / total,
         }
 
+    def task_space_widening(self, quantity: str) -> float:
+        """How much wider this quantity's spread is for the widening, exactly.
+
+        `intrinsic_inflation` is a maximum over the free intrinsics, so it says
+        how far the widest parameter direction moved and not how far *this*
+        measurement did. The two differ by a lot — a 1.5x in parameter space
+        came out as 1.25x in millimetres on the rig this was measured on —
+        because a task loads on some directions and not others.
+
+        This is the ratio a reader can act on: both spreads measured in the
+        task's own units, from runs sharing the same standard normals so the
+        comparison is not two independent estimates of the same thing.
+
+        Args:
+            quantity: Name of the quantity.
+
+        Returns:
+            The ratio of widened to unwidened spread, or one when no widening
+            was applied.
+        """
+        if self.unwidened_parameters is None:
+            return 1.0
+        index = self._index_of(quantity)
+        plain = self.unwidened_parameters[:, index]
+        plain = plain[np.isfinite(plain)]
+        if plain.size < 2:
+            return 1.0
+        widened = self.distribution(quantity, "parameters").std
+        narrow = float(np.std(plain, ddof=1))
+        return widened / narrow if narrow > 0 else 1.0
+
     def summary_lines(self, level: float = DEFAULT_LEVEL) -> Tuple[str, ...]:
         """A human summary, leading with the task-space statement."""
         lines: List[str] = [self.task.describe(), ""]
@@ -498,11 +533,13 @@ class TaskResult:
                     )
                 elif named:
                     lines.append(f"    essentially all of that is {named[0][0]}")
-            if self.intrinsic_inflation > 1.05:
+            applied = self.task_space_widening(quantity.name)
+            if applied > 1.02:
                 lines.append(
-                    f"    widened {self.intrinsic_inflation:.1f}x: the scatter "
-                    "between views is broader than the noise model predicted, "
-                    "so the intrinsics were sampled from that instead"
+                    f"    widened {applied:.2f}x in these units, because the "
+                    "scatter between views is broader than the noise model "
+                    f"predicted ({self.intrinsic_inflation:.1f}x on the worst "
+                    "intrinsic, which is a different and larger number)"
                 )
             if abs(distribution.bias) > 0.1 * max(distribution.std, 1e-12):
                 lines.append(
@@ -531,6 +568,7 @@ class TaskResult:
                         "pixel_noise": self.variance_share(q.name)[1],
                     },
                     "variance_sources": self.variance_sources(q.name),
+                    "task_space_widening": self.task_space_widening(q.name),
                     "parameters_only": self.distribution(q.name, "parameters").to_dict(level),
                     "noise_only": self.distribution(q.name, "noise").to_dict(level),
                 }

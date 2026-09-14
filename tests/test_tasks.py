@@ -693,3 +693,53 @@ def test_an_eye_to_hand_mounting_has_no_flange_to_sample():
     result = propagate(fit, eye_to_hand, 200)
     assert result.robot_only is None
     assert result.variance_sources("position_mm")["robot"] == 0.0
+
+
+# --------------------------------------------------------------------------
+# what the widening actually cost this measurement
+# --------------------------------------------------------------------------
+
+def test_the_parameter_space_inflation_overstates_the_task_space_one():
+    """The number the finding prints is not the number the reader wants.
+
+    `intrinsic_inflation` is a maximum over the free intrinsics: it says how far
+    the widest parameter direction moved, not how far this measurement did. A
+    task loads on some directions and not others, so the two differ — and they
+    differ in the direction that makes the finding's figure look worse than the
+    interval actually is.
+    """
+    from calibsense.core.session import CalibrationSession
+
+    context = rigs.with_correlated_noise()
+    result = propagate(
+        context.fit, LengthAtDepth(800.0, 100.0), 800, observation_noise_px=0.0
+    )
+    applied = result.task_space_widening("length_mm")
+    assert result.intrinsic_inflation > 3.0
+    assert applied > 1.5
+    assert applied < result.intrinsic_inflation
+
+
+def test_the_task_space_widening_is_the_ratio_it_claims_to_be():
+    """Checked against propagating the classical covariance separately."""
+    context = rigs.with_correlated_noise()
+    task = LengthAtDepth(800.0, 100.0)
+    widened = propagate(context.fit, task, 800, observation_noise_px=0.0)
+    plain = propagate(
+        context.fit, task, 800, observation_noise_px=0.0, widen=False
+    )
+    expected = (
+        widened.distribution("length_mm", "parameters").std
+        / plain.distribution("length_mm", "parameters").std
+    )
+    assert widened.task_space_widening("length_mm") == pytest.approx(expected, rel=0.05)
+
+
+def test_an_unwidened_run_reports_no_widening():
+    """Nothing to compare against, and one is the honest answer rather than None."""
+    context = rigs.healthy()
+    result = propagate(
+        context.fit, LengthAtDepth(800.0, 100.0), 300, widen=False
+    )
+    assert result.unwidened_parameters is None
+    assert result.task_space_widening("length_mm") == 1.0

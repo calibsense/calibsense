@@ -188,8 +188,9 @@ That second estimate is a leave-one-view-out jackknife rather than a plain
 sandwich, because residuals evaluated where the fit put them are smaller than
 the errors that produced them, and the plain version inherits the shrinkage —
 it measured 0.73 of the truth where the corrected one measures 0.95. The
-correction errs wide on purpose, so **a capture whose noise model holds pays
-about 23% for the insurance**; that is the deliberate trade, and
+correction errs wide on purpose, so **a capture whose noise model holds still
+pays something** — measured at 7% to 22% on the task-space figure across view
+counts from ten to forty-five. That is the deliberate trade, and
 [limitations.md](limitations.md) states it rather than burying it.
 `--no-widen` gives the unwidened figure for when you have independent reason to
 trust the noise model. Feed the measured value back with `--noise-px 0.011` to

@@ -164,15 +164,21 @@ def render_pdf(audit: Audit) -> bytes:
                 "threefold and would point at the camera regardless.",
                 7.5, colour=_GREY,
             )
-        if task.intrinsic_inflation > 1.05:
+        applied = max(
+            (task.task_space_widening(q.name) for q in task.quantities), default=1.0
+        )
+        if applied > 1.02:
             document.space(2)
             document.paragraph(
-                f"These figures are {task.intrinsic_inflation:.1f}x wider than the "
-                "residual noise model alone would give. The scatter of the "
-                "intrinsics between views is broader than that model predicts, "
-                "so they were sampled from the scatter instead, which assumes "
-                "only that different views are independent. Widening the "
-                "interval does not improve the calibration inside it.",
+                f"These figures are {applied:.2f}x wider than the residual noise "
+                "model alone would give. The scatter of the intrinsics between "
+                "views is broader than that model predicts, so they were sampled "
+                "from the scatter instead, which assumes only that different "
+                "views are independent. The findings below quote "
+                f"{task.intrinsic_inflation:.1f}x for the same cause; that is a "
+                "maximum over the intrinsics and does not transfer to these "
+                "units. Widening the interval does not improve the calibration "
+                "inside it.",
                 7.5, colour=_GREY,
             )
 
