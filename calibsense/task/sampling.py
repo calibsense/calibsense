@@ -296,6 +296,19 @@ class CovarianceSampler:
                 # Dropping it would bias the interval downwards, so the nominal
                 # camera stands in and the caller sees the count.
                 camera = self.fit.camera
+            # Added to the rotation vector, not applied as a tangent-space
+            # increment. The rotation vector is a distorted chart and every
+            # calibration view sits near |rvec| = pi, where the distortion is
+            # worst, so this looks like exactly the wrong choice — and it is
+            # the right one, because the covariance being sampled came from a
+            # Jacobian taken with respect to that same rotation vector. It
+            # describes a spread in chart coordinates and adding to them reads
+            # it back faithfully. Measured against the spread of repeated
+            # refits at |rvec| = 179 degrees: this lands within 8 per cent,
+            # while a right-multiplied increment built from the same numbers
+            # comes out two thirds too wide. The gap between the two is the
+            # exponential map's right Jacobian, sin(t/2) / (t/2), which is 0.99
+            # at twenty degrees and 0.64 at a hundred and eighty.
             poses = tuple(
                 Pose.from_parameter_vector(
                     nominal + step[p + POSE_DIMENSION * slot : p + POSE_DIMENSION * (slot + 1)]

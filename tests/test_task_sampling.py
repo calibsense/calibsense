@@ -284,3 +284,148 @@ def test_too_few_views_leaves_the_covariance_alone():
     assert not fit.covariance.robust.usable
     sampler = CovarianceSampler(fit, seed=0, widen=True)
     assert sampler.inflation == 1.0
+
+
+# --------------------------------------------------------------------------
+# which chart the pose perturbation lives in
+# --------------------------------------------------------------------------
+
+def _geodesic_degrees(a, b):
+    """Angle between two rotation matrices."""
+    return np.degrees(
+        np.arccos(np.clip((np.trace(a.T @ b) - 1.0) / 2.0, -1.0, 1.0))
+    )
+
+
+def _mean_rotation(matrices):
+    """The chordal mean of a set of rotations.
+
+    Taking one sample as the centre instead is tempting and wrong: it makes the
+    measured spread depend on whether that sample happened to be typical, which
+    at fifty samples moved this test's reference figure by sixty per cent.
+    """
+    u, _, vt = np.linalg.svd(np.sum(matrices, axis=0))
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        u[:, -1] *= -1
+        rotation = u @ vt
+    return rotation
+
+
+@pytest.mark.slow
+def test_poses_are_perturbed_in_the_chart_their_covariance_came_from():
+    """A regression guard against a fix that would make this worse.
+
+    The obvious objection to perturbing a pose by adding to its rotation vector
+    is that the rotation vector is a chart, and a distorted one: near |rvec| =
+    pi the exponential map's Jacobian is far from the identity. A calibration
+    board faces the camera, so *every* view sits near pi, which makes this look
+    like the worst case rather than an edge case.
+
+    It is nonetheless correct, because the covariance being sampled came from a
+    Jacobian taken with respect to that same rotation vector. It describes a
+    spread in chart coordinates, and adding to them is what reads it back
+    faithfully. Applying the same numbers as tangent-space increments instead
+    reinterprets them, and measured against the spread of repeated refits at
+    |rvec| = 179 degrees it comes out about 60 per cent too wide.
+    """
+    from calibsense.core.poses import Pose
+    from calibsense.core.session import CalibrationSession
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.refit.normal import POSE_DIMENSION
+    from calibsense.synthetic import synthesise
+
+    poses = list(rigs.poses())
+    view = int(np.argmax([np.linalg.norm(p.rvec) for p in poses]))
+    assert np.degrees(np.linalg.norm(poses[view].rvec)) > 170.0
+
+    fitted = []
+    for seed in range(50):
+        capture = synthesise(
+            rigs.WIDE_PINHOLE, rigs.BOARD, poses, rigs.IMAGE_SIZE,
+            noise_px=0.25, seed=1500 + seed,
+        )
+        fitted.append(
+            instrument(
+                CalibrationSession(observations=capture.observations), RefitOptions()
+            ).poses[view]
+        )
+    centre = _mean_rotation([f.rotation for f in fitted])
+    empirical = np.sqrt(
+        np.mean([_geodesic_degrees(centre, f.rotation) ** 2 for f in fitted])
+    )
+
+    capture = synthesise(
+        rigs.WIDE_PINHOLE, rigs.BOARD, poses, rigs.IMAGE_SIZE, noise_px=0.25, seed=1575
+    )
+    fit = instrument(CalibrationSession(observations=capture.observations), RefitOptions())
+    nominal = fit.poses[view]
+    joint, _ = joint_covariance(fit.covariance, (view,))
+    factor, _ = factorise(joint)
+    rng = np.random.default_rng(0)
+    steps = (rng.standard_normal((2000, joint.shape[0])) @ factor.T)[:, -POSE_DIMENSION:]
+
+    additive = np.sqrt(np.mean([
+        _geodesic_degrees(
+            nominal.rotation,
+            Pose.from_parameter_vector(nominal.parameter_vector() + s).rotation,
+        ) ** 2
+        for s in steps
+    ]))
+    tangent = np.sqrt(np.mean([
+        _geodesic_degrees(
+            nominal.rotation,
+            nominal.compose(
+                Pose.from_parameter_vector(np.concatenate([s[:3], np.zeros(3)]))
+            ).rotation,
+        ) ** 2
+        for s in steps
+    ]))
+
+    assert additive == pytest.approx(empirical, rel=0.20)
+    assert tangent > 1.4 * empirical
+
+
+def test_the_two_charts_diverge_by_the_exponential_maps_jacobian():
+    """Naming the mechanism, so the size of the gap is not a mystery.
+
+    The ratio between the two is the right Jacobian of the exponential map,
+    whose scale along the directions perpendicular to the axis is
+    `sin(t/2) / (t/2)`. It is 0.99 at twenty degrees and 0.64 at a hundred and
+    eighty, which is why this only matters for a target facing the camera — and
+    why every calibration view is in that regime.
+    """
+    from calibsense.core.poses import Pose
+
+    rng = np.random.default_rng(3)
+    steps = rng.standard_normal((400, 3)) * 0.01
+    for degrees in (20.0, 90.0, 175.0):
+        angle = np.radians(degrees)
+        nominal = Pose.from_parameter_vector(
+            np.concatenate([[0.0, 0.0, angle], np.zeros(3)])
+        )
+        additive = np.sqrt(np.mean([
+            _geodesic_degrees(
+                nominal.rotation,
+                Pose.from_parameter_vector(
+                    nominal.parameter_vector() + np.concatenate([s, np.zeros(3)])
+                ).rotation,
+            ) ** 2
+            for s in steps
+        ]))
+        tangent = np.sqrt(np.mean([
+            _geodesic_degrees(
+                nominal.rotation,
+                nominal.compose(
+                    Pose.from_parameter_vector(np.concatenate([s, np.zeros(3)]))
+                ).rotation,
+            ) ** 2
+            for s in steps
+        ]))
+        # Two of the three step components are perpendicular to the axis and
+        # carry the distortion; the third is along it and does not, so the
+        # measured ratio sits above the pure perpendicular prediction.
+        predicted = np.sin(angle / 2.0) / (angle / 2.0)
+        assert predicted <= additive / tangent <= 1.02
+        if degrees == 20.0:
+            assert additive / tangent > 0.98
