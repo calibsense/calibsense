@@ -637,3 +637,59 @@ def test_an_optimistic_hand_eye_covariance_hides_its_own_share():
     high = propagate(fit, honest, 500).variance_sources("position_mm")
     assert low["hand_eye"] < 0.05
     assert high["hand_eye"] > 0.2
+
+
+@pytest.mark.slow
+def test_a_stated_robot_repeatability_reaches_the_answer():
+    """The arm's datasheet figure had nowhere to go, and now it has one."""
+    import dataclasses
+
+    fit, task = _base_frame_task()
+    exact = propagate(fit, task, 500)
+    assert task.flange_repeatability() is None
+    assert exact.robot_only is None
+    assert exact.variance_sources("position_mm")["robot"] == 0.0
+
+    stated = dataclasses.replace(task, flange_repeatability_mm=2.0)
+    assert stated.flange_repeatability() == (2.0, 0.0)
+    result = propagate(fit, stated, 500)
+    assert result.robot_only is not None
+
+    sources = result.variance_sources("position_mm")
+    assert sum(sources.values()) == pytest.approx(1.0)
+    assert sources["robot"] > 0.05
+    assert (
+        result.distribution("position_mm").expected_error
+        > exact.distribution("position_mm").expected_error
+    )
+
+
+@pytest.mark.slow
+def test_the_robot_share_grows_with_the_stated_repeatability():
+    """A share that did not respond to the figure would be decoration."""
+    import dataclasses
+
+    fit, task = _base_frame_task()
+    shares = []
+    for millimetres in (1.0, 4.0):
+        stated = dataclasses.replace(task, flange_repeatability_mm=millimetres)
+        shares.append(
+            propagate(fit, stated, 500).variance_sources("position_mm")["robot"]
+        )
+    assert shares[1] > 3.0 * shares[0]
+
+
+def test_an_eye_to_hand_mounting_has_no_flange_to_sample():
+    """The camera does not ride the arm, so its repeatability cannot reach it."""
+    import dataclasses
+
+    fit, task = _base_frame_task(monte_carlo=False)
+    eye_to_hand = dataclasses.replace(
+        task,
+        hand_eye_result=dataclasses.replace(task.hand_eye_result, mounting="eye_to_hand"),
+        flange_repeatability_mm=5.0,
+    )
+    assert eye_to_hand.flange_pose() is None
+    result = propagate(fit, eye_to_hand, 200)
+    assert result.robot_only is None
+    assert result.variance_sources("position_mm")["robot"] == 0.0

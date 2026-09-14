@@ -318,6 +318,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the question the report puts back to the reader")
     _add_calibration_output_arguments(report)
     report.add_argument(
+        "--robot-repeatability", type=float, default=0.0, metavar="MM",
+        help=(
+            "the arm's positional repeatability in mm, from its datasheet; "
+            "sampled into a base-frame task. Without it the flange is treated "
+            "as exact"
+        ),
+    )
+    report.add_argument(
+        "--robot-repeatability-deg", type=float, default=0.0, metavar="DEG",
+        help="the arm's angular repeatability in degrees, if its datasheet gives one",
+    )
+    report.add_argument(
         "--board-tolerance", type=float, default=0.0, metavar="RELATIVE",
         help=(
             "relative uncertainty in the target's pitch, e.g. 0.001 for a board "
@@ -547,7 +559,10 @@ def _report(args: argparse.Namespace) -> int:
             return EXIT_INPUT
         flange = session.robot.aligned_with(session.observations)[0]
         audit = run_audit(
-            session, options, parse_tasks(args.task, audit.hand_eye, flange),
+            session, options, parse_tasks(
+                args.task, audit.hand_eye, flange,
+                (args.robot_repeatability, args.robot_repeatability_deg),
+            ),
             ReportMetadata(**metadata_fields), folds=args.folds,
             n_samples=args.samples, mounting=args.mounting, seed=args.seed,
             observation_noise_px=args.noise_px, widen=not args.no_widen,

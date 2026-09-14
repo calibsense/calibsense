@@ -364,9 +364,11 @@ class CameraToBase(Task):
     that carries the camera frame onto the arm, and the pixel noise at
     measurement time — and the hand-eye contribution usually dominates.
 
-    The robot's flange pose at measurement time is treated as exact. Robot
-    repeatability is a specification of the arm, not something calibsense
-    measured, and inventing a number for it would be worse than saying so.
+    The robot's flange pose at measurement time is treated as exact unless a
+    repeatability is stated. That figure is a specification of the arm rather
+    than anything calibsense measured, and inventing one would be worse than
+    saying so — but a cell integrator has it, and `flange_repeatability_mm`
+    puts it into the interval.
 
     Attributes:
         hand_eye_result: The solved hand-eye transform, whose covariance is
@@ -376,12 +378,19 @@ class CameraToBase(Task):
         flange: The robot's flange-to-base pose at measurement time. Required
             for an eye-in-hand mounting, ignored for eye-to-hand where the
             camera does not move with the arm.
+        flange_repeatability_mm: One standard deviation of the arm's positional
+            repeatability. Zero treats the flange as exact.
+        flange_repeatability_deg: One standard deviation of the arm's angular
+            repeatability. Usually the smaller of the two contributions at a
+            short reach and the larger at a long one.
     """
 
     hand_eye_result: Any = None
     depth_mm: float = 800.0
     lateral_mm: Tuple[float, float] = (0.0, 0.0)
     flange: Optional[Pose] = None
+    flange_repeatability_mm: float = 0.0
+    flange_repeatability_deg: float = 0.0
 
     kind: ClassVar[str] = "camera_to_base"
     title: ClassVar[str] = "Camera to robot base"
@@ -405,6 +414,19 @@ class CameraToBase(Task):
     def hand_eye(self):
         """The hand-eye result whose covariance is sampled."""
         return self.hand_eye_result
+
+    def flange_pose(self):
+        """The flange pose, which only an eye-in-hand mounting moves through."""
+        return self.flange if self.hand_eye_result.mounting == "eye_in_hand" else None
+
+    def flange_repeatability(self):
+        """The stated repeatability, or `None` when the arm is taken as exact."""
+        if self.flange_repeatability_mm <= 0 and self.flange_repeatability_deg <= 0:
+            return None
+        return (
+            float(self.flange_repeatability_mm),
+            float(self.flange_repeatability_deg),
+        )
 
     def quantities(self) -> Tuple[Quantity, ...]:
         """Per-axis and total position error in the base frame."""
@@ -436,7 +458,7 @@ class CameraToBase(Task):
         transform = sample.hand_eye or self.hand_eye_result.camera
         if self.hand_eye_result.mounting == "eye_in_hand":
             # base <- flange <- camera
-            to_base = self.flange.compose(transform)
+            to_base = (sample.flange or self.flange).compose(transform)
         else:
             # base <- camera directly; the camera is bolted to the cell
             to_base = transform

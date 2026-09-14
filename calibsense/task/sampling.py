@@ -61,11 +61,15 @@ class ParameterSample:
             Sampled independently of the intrinsics, because the hand-eye solve
             already folded the calibration's uncertainty into its own covariance
             and counting it twice would inflate the interval.
+        flange: The sampled robot flange pose at measurement time, when the task
+            declares a repeatability. `None` means the arm is taken as exact,
+            which is what a robot specification sheet is for.
     """
 
     camera: CameraModel
     poses: Tuple[Pose, ...] = ()
     hand_eye: Optional[Pose] = None
+    flange: Optional[Pose] = None
 
 
 def joint_covariance(
@@ -218,9 +222,17 @@ class CovarianceSampler:
         seed: Optional[int] = 0,
         hand_eye: Optional["HandEyeResult"] = None,
         widen: bool = True,
+        flange: Optional[Pose] = None,
+        flange_repeatability: Optional[Tuple[float, float]] = None,
     ):
         self.fit = fit
         self.hand_eye = hand_eye
+        self.flange = flange
+        # (translation mm, rotation degrees), both one standard deviation. The
+        # arm's own repeatability is independent of anything the calibration
+        # measured, so it is drawn on its own rather than through the joint
+        # covariance.
+        self.flange_repeatability = flange_repeatability
         self._hand_eye_factor = (
             factorise(hand_eye.camera_covariance)[0] if hand_eye is not None else None
         )
@@ -260,6 +272,7 @@ class CovarianceSampler:
             camera=self.fit.camera,
             poses=tuple(self.fit.poses[i] for i in self.view_indices),
             hand_eye=None if self.hand_eye is None else self.hand_eye.camera,
+            flange=self.flange,
         )
 
     def draw(self, n_samples: int) -> List[ParameterSample]:
@@ -283,6 +296,13 @@ class CovarianceSampler:
             if self._hand_eye_factor is not None
             else None
         )
+        flange_steps = None
+        if self.flange is not None and self.flange_repeatability is not None:
+            translation_sd, rotation_sd = self.flange_repeatability
+            flange_steps = np.concatenate([
+                self._rng.normal(0.0, np.radians(rotation_sd), (n_samples, 3)),
+                self._rng.normal(0.0, translation_sd, (n_samples, 3)),
+            ], axis=1)
         p = self.fit.covariance.n_intrinsic
         model = type(self.fit.camera)
         samples: List[ParameterSample] = []
@@ -322,7 +342,12 @@ class CovarianceSampler:
                 hand_eye = self.hand_eye.camera.compose(
                     Pose.from_parameter_vector(hand_eye_steps[len(samples)])
                 )
-            samples.append(ParameterSample(camera, poses, hand_eye))
+            flange = self.flange
+            if flange_steps is not None:
+                flange = self.flange.compose(
+                    Pose.from_parameter_vector(flange_steps[len(samples)])
+                )
+            samples.append(ParameterSample(camera, poses, hand_eye, flange))
         return samples
 
     def marginal_std(self) -> np.ndarray:

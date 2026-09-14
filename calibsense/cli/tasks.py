@@ -23,6 +23,8 @@ find out.
 
 from __future__ import annotations
 
+import dataclasses
+
 import re
 from typing import Any, Optional, Sequence, Tuple
 
@@ -143,7 +145,10 @@ def parse_task(
 
 
 def parse_tasks(
-    texts: Sequence[str], hand_eye: Optional[Any] = None, flange: Optional[Any] = None
+    texts: Sequence[str],
+    hand_eye: Optional[Any] = None,
+    flange: Optional[Any] = None,
+    repeatability: Tuple[float, float] = (0.0, 0.0),
 ) -> Tuple[Any, ...]:
     """Build several tasks from shorthand strings.
 
@@ -151,8 +156,20 @@ def parse_tasks(
         texts: The shorthand strings.
         hand_eye: A solved hand-eye result, for a `base` task.
         flange: The flange pose, for an eye-in-hand `base` task.
+        repeatability: The arm's `(translation mm, rotation degrees)`
+            repeatability, applied to `base` tasks. Zeros treat it as exact.
 
     Returns:
         One task per string, in order.
     """
-    return tuple(parse_task(text, hand_eye, flange) for text in texts)
+    tasks = []
+    for text in texts:
+        task = parse_task(text, hand_eye, flange)
+        if isinstance(task, CameraToBase) and any(v > 0 for v in repeatability):
+            task = dataclasses.replace(
+                task,
+                flange_repeatability_mm=float(repeatability[0]),
+                flange_repeatability_deg=float(repeatability[1]),
+            )
+        tasks.append(task)
+    return tuple(tasks)

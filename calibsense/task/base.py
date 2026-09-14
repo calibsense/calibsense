@@ -78,6 +78,20 @@ class Task(ABC):
         """
         return ()
 
+    def flange_pose(self) -> Optional[Any]:
+        """The robot flange pose at measurement time, for tasks that use one."""
+        return None
+
+    def flange_repeatability(self) -> Optional[Tuple[float, float]]:
+        """The arm's repeatability as `(translation mm, rotation degrees)`.
+
+        `None`, the default, treats the flange as exact. Robot repeatability is
+        a specification of the arm rather than anything calibsense measured, so
+        there is no figure to default to — but a cell integrator has it, and
+        stating it is what gets it into the interval.
+        """
+        return None
+
     def hand_eye(self):
         """The hand-eye result this task needs sampled, or `None`.
 
@@ -284,6 +298,8 @@ class TaskResult:
         hand_eye_only: Samples with only the hand-eye transform varying, for
             tasks that go through one. `None` for every other task, where there
             is nothing to separate.
+        robot_only: Samples with only the robot flange varying, when a
+            repeatability was stated. `None` when the arm is taken as exact.
     """
 
     task: Task
@@ -297,6 +313,7 @@ class TaskResult:
     sampler_size: int
     intrinsic_inflation: float = 1.0
     hand_eye_only: Optional[np.ndarray] = None
+    robot_only: Optional[np.ndarray] = None
 
     @property
     def n_samples(self) -> int:
@@ -414,25 +431,39 @@ class TaskResult:
             quantity: Name of the quantity.
 
         Returns:
-            Shares summing to one, keyed `"calibration"`, `"hand_eye"` and
-            `"pixel_noise"`. Without a hand-eye transform the `"hand_eye"` share
-            is zero and this agrees with `variance_share`.
+            Shares summing to one, keyed `"calibration"`, `"hand_eye"`,
+            `"robot"` and `"pixel_noise"`. A source the task does not carry has
+            a zero share, and with none of them this agrees with
+            `variance_share`.
         """
         parameters = self.distribution(quantity, "parameters").std ** 2
         noise = self.distribution(quantity, "noise").std ** 2
+        empty = {
+            "calibration": 0.0, "hand_eye": 0.0, "robot": 0.0, "pixel_noise": 0.0
+        }
         total = parameters + noise
         if total <= 0:
-            return {"calibration": 0.0, "hand_eye": 0.0, "pixel_noise": 0.0}
-        hand_eye = 0.0
-        if self.hand_eye_only is not None:
-            index = self._index_of(quantity)
-            column = self.hand_eye_only[:, index]
+            return empty
+        index = self._index_of(quantity)
+
+        def variance_of(samples):
+            if samples is None:
+                return 0.0
+            column = samples[:, index]
             column = column[np.isfinite(column)]
-            if column.size > 1:
-                hand_eye = min(float(np.std(column, ddof=1)) ** 2, parameters)
+            return float(np.std(column, ddof=1)) ** 2 if column.size > 1 else 0.0
+
+        hand_eye = variance_of(self.hand_eye_only)
+        robot = variance_of(self.robot_only)
+        # Both are drawn independently of the camera and of each other, so the
+        # calibration's share is what is left. Monte Carlo noise can push that
+        # slightly negative when one source dominates completely.
+        separated = min(hand_eye + robot, parameters)
+        scale = separated / (hand_eye + robot) if hand_eye + robot > 0 else 0.0
         return {
-            "calibration": max(parameters - hand_eye, 0.0) / total,
-            "hand_eye": hand_eye / total,
+            "calibration": max(parameters - separated, 0.0) / total,
+            "hand_eye": hand_eye * scale / total,
+            "robot": robot * scale / total,
             "pixel_noise": noise / total,
         }
 
@@ -450,18 +481,23 @@ class TaskResult:
             )
             sources = self.variance_sources(quantity.name)
             if self.hand_eye_only is not None:
-                if sources["hand_eye"] >= HAND_EYE_SHARE_FLOOR:
+                named = [
+                    (label, sources[key])
+                    for key, label in (
+                        ("calibration", "camera calibration"),
+                        ("hand_eye", "hand-eye"),
+                        ("robot", "robot repeatability"),
+                    )
+                    if sources[key] >= HAND_EYE_SHARE_FLOOR
+                ]
+                if len(named) > 1:
                     lines.append(
                         f"    that {calibration:.0%} is "
-                        f"{sources['calibration']:.0%} camera calibration and "
-                        f"{sources['hand_eye']:.0%} hand-eye, which says which "
-                        "of the two to spend on"
+                        + ", ".join(f"{share:.0%} {label}" for label, share in named)
+                        + ", which says where to spend"
                     )
-                else:
-                    lines.append(
-                        "    essentially all of that is the camera "
-                        "calibration, not the hand-eye transform"
-                    )
+                elif named:
+                    lines.append(f"    essentially all of that is {named[0][0]}")
             if self.intrinsic_inflation > 1.05:
                 lines.append(
                     f"    widened {self.intrinsic_inflation:.1f}x: the scatter "

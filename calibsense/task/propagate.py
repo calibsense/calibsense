@@ -87,7 +87,9 @@ def propagate(
         )
 
     sampler = CovarianceSampler(
-        fit, task.view_indices(), seed, task.hand_eye(), widen=widen
+        fit, task.view_indices(), seed, task.hand_eye(), widen=widen,
+        flange=task.flange_pose(),
+        flange_repeatability=task.flange_repeatability(),
     )
     nominal_sample = sampler.nominal()
     observations = task.observe(nominal_sample)
@@ -118,6 +120,12 @@ def propagate(
     hand_eye_only = (
         np.full((n_samples, n_quantities), np.nan) if wants_split else None
     )
+    wants_robot = (
+        task.flange_pose() is not None and task.flange_repeatability() is not None
+    )
+    robot_only = (
+        np.full((n_samples, n_quantities), np.nan) if wants_robot else None
+    )
     for index, draw in enumerate(draws):
         noisy = observations + perturbations[index]
         combined[index] = _attempt(task, draw, noisy, n_quantities)
@@ -130,6 +138,19 @@ def propagate(
                     camera=nominal_sample.camera,
                     poses=nominal_sample.poses,
                     hand_eye=draw.hand_eye,
+                    flange=nominal_sample.flange,
+                ),
+                observations,
+                n_quantities,
+            )
+        if robot_only is not None:
+            robot_only[index] = _attempt(
+                task,
+                ParameterSample(
+                    camera=nominal_sample.camera,
+                    poses=nominal_sample.poses,
+                    hand_eye=nominal_sample.hand_eye,
+                    flange=draw.flange,
                 ),
                 observations,
                 n_quantities,
@@ -150,6 +171,7 @@ def propagate(
         sampler_size=sampler.n_free,
         intrinsic_inflation=sampler.inflation,
         hand_eye_only=hand_eye_only,
+        robot_only=robot_only,
     )
 
 

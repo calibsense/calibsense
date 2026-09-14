@@ -137,20 +137,28 @@ def render_pdf(audit: Audit) -> bytes:
             shares = [
                 (q.name, task.variance_sources(q.name)) for q in task.quantities
             ]
-            document.text("which half of the dark part", 8.5, "bold")
+            document.text("which part of the dark part", 8.5, "bold")
             document.space(2)
+            carries_robot = any(s["robot"] > 0 for _, s in shares)
+            headers = ["quantity", "camera calibration", "hand-eye"]
+            widths = [150, 130, 130]
+            if carries_robot:
+                headers.append("robot")
+                widths = [140, 110, 90, 90]
             document.table(
-                ["quantity", "camera calibration", "hand-eye"],
+                headers,
                 [
                     [name, f"{s['calibration']:.0%}", f"{s['hand_eye']:.0%}"]
+                    + ([f"{s['robot']:.0%}"] if carries_robot else [])
                     for name, s in shares
                 ],
-                [150, 130, 130],
+                widths,
             )
             document.space(3)
             document.paragraph(
-                "Re-calibrating the camera and re-solving the hand-eye are "
-                "different jobs, and this says which one the error is in. The "
+                "Re-calibrating the camera, re-solving the hand-eye and buying "
+                "a better arm are different jobs, and this says which one the "
+                "error is in. The "
                 "split rests on the hand-eye covariance being the resampled "
                 "one; a residual-based solve understates its own share "
                 "threefold and would point at the camera regardless.",
