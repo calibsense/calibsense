@@ -32,7 +32,7 @@ from ..diagnose.base import DiagnosticContext, Severity
 from ..diagnose.report import Diagnosis, diagnose
 from ..errors import CalibSenseError, ValidationError
 from ..refit.result import InstrumentedFit, RefitOptions
-from ..refit.engine import instrument
+from ..refit.engine import instrument, refit_without
 from ..task.base import Task, TaskResult
 from ..task.propagate import DEFAULT_SAMPLES, propagate
 from ..task.tasks import LengthAtDepth
@@ -108,6 +108,11 @@ class Audit:
         prediction: What more views would buy, when there is something to fix.
         hand_eye: The solved hand-eye transform, when robot poses were supplied.
         hand_eye_diagnosis: Pose-set sufficiency for that solve.
+        without_outliers: The same capture refit with the flagged views removed,
+            when any were flagged and enough remain. `None` otherwise. Reported
+            rather than adopted: which views to trust is the user's call, and a
+            threshold that silently drops data is how a calibration gets quietly
+            overfitted.
     """
 
     metadata: ReportMetadata
@@ -119,6 +124,7 @@ class Audit:
     prediction: Optional[Forecast] = None
     hand_eye: Optional[Any] = None
     hand_eye_diagnosis: Optional[Diagnosis] = None
+    without_outliers: Optional[InstrumentedFit] = None
 
     @property
     def headline_task(self) -> Optional[TaskResult]:
@@ -194,6 +200,28 @@ class Audit:
             )
         return tuple(reasons)
 
+    def outlier_cost(self) -> Optional[Dict[str, Any]]:
+        """What the flagged views cost, by comparison against a fit without them.
+
+        Returns:
+            The two fits' residual scale, focal-length deviation and view count,
+            or `None` when nothing was flagged or too few views would remain.
+        """
+        if self.without_outliers is None:
+            return None
+        before, after = self.fit, self.without_outliers
+        dropped = [view.view_id for view in before.residuals.outlier_views()]
+        return {
+            "dropped": dropped,
+            "n_views_before": before.n_views,
+            "n_views_after": after.n_views,
+            "sigma_before_px": float(before.covariance.sigma),
+            "sigma_after_px": float(after.covariance.sigma),
+            "fx_std_before": float(before.covariance.intrinsic_std()[0]),
+            "fx_std_after": float(after.covariance.intrinsic_std()[0]),
+            "fx_shift": float(after.camera.fx - before.camera.fx),
+        }
+
     def dominant_cause(self) -> Optional[Any]:
         """The worst finding that names a cause rather than a symptom.
 
@@ -268,6 +296,7 @@ class Audit:
             "hand_eye_diagnosis": (
                 self.hand_eye_diagnosis.to_dict() if self.hand_eye_diagnosis else None
             ),
+            "without_outliers": self.outlier_cost(),
         }
 
 
@@ -362,6 +391,18 @@ def run_audit(
         validation = None
 
     diagnosis = diagnose(fit, observations, validation)
+
+    # What the flagged views are costing, which the outlier finding names but
+    # cannot quantify. Excluding a view needs no robust loss, so this is
+    # available today; it is a comparison offered to the reader, not a fit the
+    # report adopts.
+    without_outliers: Optional[InstrumentedFit] = None
+    flagged = [view.view_id for view in fit.residuals.outlier_views()]
+    if flagged:
+        try:
+            without_outliers = refit_without(session, flagged, options)
+        except CalibSenseError:
+            without_outliers = None
     chosen = tuple(tasks) if tasks else default_tasks(fit, observations)
     results = tuple(
         propagate(
@@ -417,4 +458,5 @@ def run_audit(
         prediction=prediction,
         hand_eye=hand_eye,
         hand_eye_diagnosis=hand_eye_diagnosis,
+        without_outliers=without_outliers,
     )

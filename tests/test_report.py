@@ -529,3 +529,68 @@ def test_the_text_report_covers_the_same_ground(good_audit):
 def test_the_text_report_warns_first_when_untrustworthy(degenerate_audit):
     text = render_text(degenerate_audit)
     assert text.index("DOES NOT DETERMINE") < text.index("findings")
+
+
+# --------------------------------------------------------------------------
+# what the outlier views are costing
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def outlier_audit():
+    """A capture with one view given eight times the noise of the rest."""
+    capture = rigs.with_bad_view(scale=8.0)
+    session = CalibrationSession(observations=capture.observations)
+    return run_audit(session, n_samples=300, forecast_samples=200)
+
+
+@pytest.mark.slow
+def test_the_outlier_finding_is_quantified_rather_than_only_named(outlier_audit):
+    """Naming a bad view without saying what it costs is not actionable.
+
+    Excluding a view needs no robust loss and no custom optimiser, so this is
+    available while the down-weighting half of the same problem waits on a
+    native solver.
+    """
+    cost = outlier_audit.outlier_cost()
+    assert cost is not None
+    assert cost["dropped"]
+    assert cost["n_views_after"] == cost["n_views_before"] - len(cost["dropped"])
+    assert cost["sigma_after_px"] < cost["sigma_before_px"]
+    assert cost["fx_std_after"] < cost["fx_std_before"]
+
+
+@pytest.mark.slow
+def test_a_bad_view_moves_the_estimate_and_not_only_the_interval(outlier_audit):
+    """The half of this that open-items did not mention.
+
+    A bad view inflates sigma so every interval widens, which is what the item
+    said. It also drags the point estimate, which it did not, and that is the
+    part a reader cannot see from the residuals.
+    """
+    cost = outlier_audit.outlier_cost()
+    assert abs(cost["fx_shift"]) > 0.3 * cost["fx_std_after"]
+
+
+@pytest.mark.slow
+def test_the_comparison_is_offered_and_not_adopted(outlier_audit):
+    """The reported calibration must still be the one over every view."""
+    assert outlier_audit.without_outliers is not None
+    assert outlier_audit.fit.n_views > outlier_audit.without_outliers.n_views
+    assert outlier_audit.fit.camera.fx != outlier_audit.without_outliers.camera.fx
+
+
+@pytest.mark.slow
+def test_a_clean_capture_has_nothing_to_exclude(good_audit):
+    assert good_audit.outlier_cost() is None
+    assert "outlier views are costing" not in render_text(good_audit)
+
+
+@pytest.mark.slow
+def test_the_outlier_cost_reaches_both_renderers(outlier_audit):
+    import json
+
+    assert "outlier views are costing" in render_text(outlier_audit)
+    # Headings are set upper case, and this one can land on the second page.
+    assert b"OUTLIER VIEWS ARE COSTING" in pdf_text(render_pdf(outlier_audit))
+    payload = json.loads(render_json(outlier_audit))
+    assert payload["without_outliers"]["dropped"]

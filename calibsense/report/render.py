@@ -229,6 +229,40 @@ def render_pdf(audit: Audit) -> bytes:
             7.5, colour=_GREY,
         )
 
+    cost = audit.outlier_cost()
+    if cost is not None:
+        _heading(document, "What the outlier views are costing")
+        document.paragraph(
+            f"Excluding {', '.join(cost['dropped'])} and refitting over the "
+            f"remaining {cost['n_views_after']} views gives the figures on the "
+            "right. Both columns are shown because this is a judgement the "
+            "report should not make for you: a view fits badly for a reason, "
+            "and whether that reason invalidates it is something only you can "
+            "see in the image.",
+            8.5,
+        )
+        document.space(4)
+        _key_values(document, [
+            (
+                "Residual sigma",
+                f"{cost['sigma_before_px']:.4f} px  ->  {cost['sigma_after_px']:.4f} px",
+            ),
+            (
+                "sd(fx)",
+                f"{cost['fx_std_before']:.3f} px  ->  {cost['fx_std_after']:.3f} px",
+            ),
+            ("fx moves by", f"{cost['fx_shift']:+.3f} px"),
+        ])
+        document.space(3)
+        document.paragraph(
+            "The focal length moving is the part worth attention. A bad view "
+            "widens every interval, which is visible, and it also drags the "
+            "estimate, which is not: if that shift is large against the "
+            "deviation beside it, the calibration you have is being pulled by "
+            "the view you are being warned about.",
+            7.5, colour=_GREY,
+        )
+
     _heading(document, "Findings")
     document.paragraph(audit.diagnosis.verdict(), 9.0)
     document.space(4)
@@ -402,6 +436,19 @@ def render_text(audit: Audit) -> str:
         lines += list(audit.hand_eye.summary_lines())
         if audit.hand_eye_diagnosis is not None:
             lines += list(audit.hand_eye_diagnosis.summary_lines())
+    cost = audit.outlier_cost()
+    if cost is not None:
+        lines += ["", "what the outlier views are costing", "-" * 34]
+        lines.append(
+            f"excluding {', '.join(cost['dropped'])} would take the residual "
+            f"sigma from {cost['sigma_before_px']:.4f} to "
+            f"{cost['sigma_after_px']:.4f} px and sd(fx) from "
+            f"{cost['fx_std_before']:.3f} to {cost['fx_std_after']:.3f} px"
+        )
+        lines.append(
+            f"    fx itself would move {cost['fx_shift']:+.3f} px, so this is "
+            "not only a wider interval but a different answer"
+        )
     lines += ["", "the open question", "-" * 17, audit.metadata.open_question, ""]
     lines.append(f"Questions: {audit.metadata.contact}")
     return "\n".join(lines) + "\n"
