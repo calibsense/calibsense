@@ -101,6 +101,21 @@ class HandEyeContext:
         return self.robot_axes / np.where(norms > 0, norms, 1.0)
 
 
+#: Relative scale error assumed for a printed target when reporting what the
+#: board costs. 0.1% is the middle of the 50 to 200 micrometre range a printed
+#: or laminated target holds on a 25 mm pitch; it is a stated assumption rather
+#: than a measurement of the user's board, which is why the finding reports the
+#: sensitivity alongside it so a reader with a certificate can substitute their
+#: own figure.
+TYPICAL_BOARD_SCALE_ERROR = 0.001
+
+#: Ratio above which the note says the board is the dominant term rather than
+#: merely a term. This never changes the severity, for the reason in
+#: `board_scale`: the ratio grows as the capture improves, so grading on it
+#: would punish good work.
+BOARD_SCALE_DOMINANT = 1.0
+
+
 def _finding(cause, title, severity, summary, action="", **metrics) -> Finding:
     return Finding(cause, title, severity, summary, action, metrics)
 
@@ -212,6 +227,79 @@ def conditioning(context: HandEyeContext) -> Finding:
     )
 
 
+def board_scale(context: HandEyeContext) -> Finding:
+    """Is a printed board's own error bigger than the interval being reported?
+
+    This is the one error in the whole chain that nothing else can see. A target
+    printed a tenth of a per cent large is a scale error on every object point;
+    the fit absorbs it entirely into the poses, the focal length is untouched,
+    and the reprojection residual is unchanged to the last bit. Hand-eye is
+    where it surfaces, because the robot's flange poses are in true millimetres
+    and the board-derived poses are not, so the translation takes the
+    disagreement — at about seven times the board error.
+
+    It is also invisible to the view-clustered covariance, which is built from
+    the scatter *between* views and a board scale error moves every view
+    coherently. So neither the random-error machinery nor the model-validity
+    check can reach it, and this finding is the only thing that says so.
+
+    Always a note, never a warning. The quantity it reports is the ratio of a
+    systematic the tool cannot see to a random error it can, and that ratio
+    *grows as the capture improves* — more views and better coverage shrink the
+    denominator while leaving the numerator alone. Grading on it would mean a
+    better calibration earning a louder complaint, and it would gate CI on a
+    property of the user's target rather than of their work. What it is for is
+    telling a reader when the number they are about to act on is limited by
+    something no amount of recapturing will fix.
+    """
+    result = context.result
+    sensitivity = float(result.board_scale_sensitivity_mm)
+    random_mm = float(np.sqrt(np.diag(result.camera_covariance)[3:6]).mean())
+    typical = TYPICAL_BOARD_SCALE_ERROR * sensitivity
+    ratio = typical / random_mm if random_mm > 0 else float("inf")
+    metrics = dict(
+        board_scale_sensitivity_mm=sensitivity,
+        assumed_board_scale_error=TYPICAL_BOARD_SCALE_ERROR,
+        implied_translation_error_mm=typical,
+        reported_translation_sd_mm=random_mm,
+        ratio=float(ratio),
+    )
+    shared = (
+        f"a board scale error moves the camera translation by "
+        f"{sensitivity:.0f} mm per unit, so a target printed "
+        f"{100 * TYPICAL_BOARD_SCALE_ERROR:.1f}% out would shift it "
+        f"{typical:.3f} mm against the {random_mm:.3f} mm of random error "
+        f"reported here"
+    )
+    action = (
+        "calibsense treats the board as exact, so this systematic is not in any "
+        "interval above and cannot be: it is identical across every view, which "
+        "is precisely what a between-view estimate cannot see, and it leaves the "
+        "reprojection error unchanged. Order a target with a calibration "
+        "certificate and use its measured pitch, or measure your own against a "
+        "gauge. A glass or ceramic target holds scale far better than a printed "
+        "or laminated one."
+    )
+    if sensitivity <= 0:
+        return _finding(
+            "hand_eye_board_scale", "Board scale", Severity.NOTE,
+            "the board scale sensitivity could not be measured, because the "
+            "perturbed solve did not converge",
+            **metrics,
+        )
+    dominant = ratio > BOARD_SCALE_DOMINANT
+    return _finding(
+        "hand_eye_board_scale", "Board scale", Severity.NOTE,
+        shared + (
+            f", which is {ratio:.1f}x larger — the board, not this solve, is "
+            "what limits the answer"
+            if dominant else
+            f", or {ratio:.2f} times it"
+        ),
+        action, dominant=bool(dominant), **metrics,
+    )
+
+
 def axis_agreement(context: HandEyeContext) -> Finding:
     """Do the robot and camera relative rotations agree in magnitude?
 
@@ -261,6 +349,7 @@ HAND_EYE_DIAGNOSTICS = (
     rotation_axis_spread,
     rotation_magnitude,
     conditioning,
+    board_scale,
 )
 
 

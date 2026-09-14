@@ -62,6 +62,12 @@ class HandEyeResult:
         residuals: Per-view residual, shape `(v, 6)`, rotation then translation.
         view_ids: The views, in residual order.
         iterations: Refinement iterations taken.
+        board_scale_sensitivity_mm: Millimetres the camera translation moves per
+            unit of relative board scale error. A printed target is good to
+            roughly 0.1%, and this says what that costs — typically about seven
+            times the board error, because the robot's poses are in true
+            millimetres and the board-derived poses are not. Zero when it was
+            not measured.
     """
 
     mounting: str
@@ -78,6 +84,7 @@ class HandEyeResult:
     covariance_method: str = "residual"
     monte_carlo_samples: int = 0
     iterations: int = 0
+    board_scale_sensitivity_mm: float = 0.0
 
     PARAMETER_NAMES: ClassVar[Tuple[str, ...]] = (
         "camera.rx", "camera.ry", "camera.rz", "camera.tx", "camera.ty", "camera.tz",
