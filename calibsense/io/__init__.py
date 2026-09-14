@@ -9,18 +9,22 @@
 # without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 # PARTICULAR PURPOSE. See the LICENSE file, or <https://www.gnu.org/licenses/>.
 
-"""Single-file persistence for sessions and fits."""
+"""Single-file persistence for sessions and fits, and calibration export."""
 
 from __future__ import annotations
 
 from .bundle import read_bundle, write_bundle
+from .export import EXPORT_FORMATS, export_calibration, resolve_format
 from .fit_io import load_fit, save_fit
 from .session_io import load_session, save_session
 
 __all__ = [
+    "EXPORT_FORMATS",
+    "export_calibration",
     "load_fit",
     "load_session",
     "read_bundle",
+    "resolve_format",
     "save_fit",
     "save_session",
     "write_bundle",
