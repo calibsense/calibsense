@@ -535,3 +535,105 @@ def test_widening_costs_little_when_the_noise_model_holds():
     # fifth even when the noise model is perfectly satisfied, which is the price
     # of it not erring short by a third when the model fails.
     assert widened / classical < 1.45
+
+
+# --------------------------------------------------------------------------
+# separating the hand-eye transform from the calibration
+# --------------------------------------------------------------------------
+
+def _base_frame_task(monte_carlo=True, samples=120):
+    from calibsense.handeye import solve_hand_eye
+    from calibsense.refit import RefitOptions
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    solved = solve_hand_eye(
+        fit, session, mounting="eye_in_hand",
+        monte_carlo=monte_carlo, n_samples=samples,
+    )
+    flange = session.robot.aligned_with(session.observations)[0]
+    return fit, CameraToBase(
+        hand_eye_result=solved, depth_mm=800.0, flange=flange
+    )
+
+
+def test_a_task_without_a_hand_eye_has_nothing_to_separate(good_capture):
+    """The three-way split has to agree with the two-way one where it applies."""
+    from calibsense.core.session import CalibrationSession
+
+    fit = instrument(CalibrationSession(observations=good_capture.observations))
+    result = propagate(fit, LengthAtDepth(800.0, 100.0), 400)
+    assert result.hand_eye_only is None
+    sources = result.variance_sources("length_mm")
+    calibration, noise = result.variance_share("length_mm")
+    assert sources["hand_eye"] == 0.0
+    assert sources["calibration"] == pytest.approx(calibration)
+    assert sources["pixel_noise"] == pytest.approx(noise)
+
+
+@pytest.mark.slow
+def test_the_base_frame_split_says_which_of_the_two_to_spend_on():
+    """The question a robot cell asks that the two-way split could not answer.
+
+    Whether the camera calibration or the hand-eye solve dominates decides where
+    the money goes, and on this rig it is genuinely close — which is the point,
+    because the previous report lumped them together and said only that
+    "calibration and hand-eye" accounted for everything.
+    """
+    fit, task = _base_frame_task()
+    result = propagate(fit, task, 600)
+    assert result.hand_eye_only is not None
+
+    sources = result.variance_sources("position_mm")
+    assert sum(sources.values()) == pytest.approx(1.0)
+    assert sources["hand_eye"] > 0.1, sources
+    assert sources["calibration"] > 0.1, sources
+    assert any("hand-eye" in line for line in result.summary_lines())
+
+
+@pytest.mark.slow
+def test_the_split_is_additive_which_is_what_makes_the_subtraction_valid():
+    """The calibration's share is what is left after the hand-eye's is removed.
+
+    That is only right if the two variances add. They are drawn independently,
+    but the task is non-linear in both, so additivity is an assumption rather
+    than an identity and it is worth measuring. It holds to a few per cent.
+    """
+    from calibsense.task.propagate import _attempt
+    from calibsense.task.sampling import CovarianceSampler, ParameterSample
+
+    fit, task = _base_frame_task()
+    sampler = CovarianceSampler(fit, task.view_indices(), 0, task.hand_eye())
+    nominal = sampler.nominal()
+    observations = task.observe(nominal)
+    n_quantities = len(task.quantities())
+    draws = sampler.draw(1500)
+
+    def spread(builder):
+        values = np.array([
+            _attempt(task, builder(d), observations, n_quantities) for d in draws
+        ])
+        return np.nanvar(values, axis=0, ddof=1)
+
+    both = spread(lambda d: d)
+    camera = spread(lambda d: ParameterSample(d.camera, d.poses, nominal.hand_eye))
+    hand_eye = spread(lambda d: ParameterSample(nominal.camera, nominal.poses, d.hand_eye))
+    assert np.allclose(both, camera + hand_eye, rtol=0.10)
+
+
+@pytest.mark.slow
+def test_an_optimistic_hand_eye_covariance_hides_its_own_share():
+    """Why the split is only meaningful on top of the Monte Carlo covariance.
+
+    The residual-based hand-eye covariance treats the target-in-camera poses as
+    exact and understates itself threefold, which here reads as the hand-eye
+    contributing nothing at all. The honest covariance puts it at half. Anyone
+    reading the split off a residual-based solve would draw the opposite
+    conclusion about where to spend.
+    """
+    fit, optimistic = _base_frame_task(monte_carlo=False)
+    _, honest = _base_frame_task(monte_carlo=True)
+    low = propagate(fit, optimistic, 500).variance_sources("position_mm")
+    high = propagate(fit, honest, 500).variance_sources("position_mm")
+    assert low["hand_eye"] < 0.05
+    assert high["hand_eye"] > 0.2

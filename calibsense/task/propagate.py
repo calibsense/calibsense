@@ -110,11 +110,30 @@ def propagate(
     combined = np.full((n_samples, n_quantities), np.nan)
     parameters_only = np.full((n_samples, n_quantities), np.nan)
     noise_only = np.full((n_samples, n_quantities), np.nan)
+    # A fourth run, only when there is a hand-eye transform to separate out.
+    # Without it the parameter share answers "would re-calibrating help" but not
+    # "re-calibrate what", which for a robot cell is the question that decides
+    # where the money goes.
+    wants_split = task.hand_eye() is not None
+    hand_eye_only = (
+        np.full((n_samples, n_quantities), np.nan) if wants_split else None
+    )
     for index, draw in enumerate(draws):
         noisy = observations + perturbations[index]
         combined[index] = _attempt(task, draw, noisy, n_quantities)
         parameters_only[index] = _attempt(task, draw, observations, n_quantities)
         noise_only[index] = _attempt(task, nominal_sample, noisy, n_quantities)
+        if hand_eye_only is not None:
+            hand_eye_only[index] = _attempt(
+                task,
+                ParameterSample(
+                    camera=nominal_sample.camera,
+                    poses=nominal_sample.poses,
+                    hand_eye=draw.hand_eye,
+                ),
+                observations,
+                n_quantities,
+            )
 
     combined, parameters_only, noise_only = _drop_failures(
         task, combined, parameters_only, noise_only
@@ -130,6 +149,7 @@ def propagate(
         sampler_rank=sampler.rank,
         sampler_size=sampler.n_free,
         intrinsic_inflation=sampler.inflation,
+        hand_eye_only=hand_eye_only,
     )
 
 

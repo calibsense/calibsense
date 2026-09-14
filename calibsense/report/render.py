@@ -132,6 +132,30 @@ def render_pdf(audit: Audit) -> bytes:
             "time. Only the dark part can be improved by re-calibrating.",
             7.5, colour=_GREY,
         )
+        if task.hand_eye_only is not None:
+            document.space(2)
+            shares = [
+                (q.name, task.variance_sources(q.name)) for q in task.quantities
+            ]
+            document.text("which half of the dark part", 8.5, "bold")
+            document.space(2)
+            document.table(
+                ["quantity", "camera calibration", "hand-eye"],
+                [
+                    [name, f"{s['calibration']:.0%}", f"{s['hand_eye']:.0%}"]
+                    for name, s in shares
+                ],
+                [150, 130, 130],
+            )
+            document.space(3)
+            document.paragraph(
+                "Re-calibrating the camera and re-solving the hand-eye are "
+                "different jobs, and this says which one the error is in. The "
+                "split rests on the hand-eye covariance being the resampled "
+                "one; a residual-based solve understates its own share "
+                "threefold and would point at the camera regardless.",
+                7.5, colour=_GREY,
+            )
         if task.intrinsic_inflation > 1.05:
             document.space(2)
             document.paragraph(

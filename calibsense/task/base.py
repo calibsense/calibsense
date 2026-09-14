@@ -255,6 +255,12 @@ class MeasurementDistribution:
         }
 
 
+#: Below this the hand-eye share is reported as negligible rather than as a
+#: percentage, because a figure that rounds to zero invites the reader to
+#: wonder whether it is zero or merely small.
+HAND_EYE_SHARE_FLOOR = 0.01
+
+
 @dataclass(frozen=True)
 class TaskResult:
     """Propagated task-space error, split by where it comes from.
@@ -275,6 +281,9 @@ class TaskResult:
         intrinsic_inflation: How much wider the sampled intrinsic block was than
             the classical one, because the between-view scatter said the noise
             model understated it on this capture. One means it did not.
+        hand_eye_only: Samples with only the hand-eye transform varying, for
+            tasks that go through one. `None` for every other task, where there
+            is nothing to separate.
     """
 
     task: Task
@@ -287,6 +296,7 @@ class TaskResult:
     sampler_rank: int
     sampler_size: int
     intrinsic_inflation: float = 1.0
+    hand_eye_only: Optional[np.ndarray] = None
 
     @property
     def n_samples(self) -> int:
@@ -386,6 +396,46 @@ class TaskResult:
             return 0.0, 0.0
         return parameters / total, noise / total
 
+    def variance_sources(self, quantity: str) -> Dict[str, float]:
+        """Where the error comes from, separating hand-eye from the calibration.
+
+        `variance_share` answers "would a better calibration help". For a task
+        that goes through a hand-eye transform that is two questions wearing one
+        coat, because re-calibrating the camera and re-solving the hand-eye are
+        different jobs with different costs. This splits them.
+
+        The camera and the hand-eye transform are drawn independently, so their
+        variances add and the calibration's share is what is left after the
+        hand-eye's is taken out. Monte Carlo noise can make that difference
+        slightly negative when one source dominates completely, so it is clamped
+        at zero rather than reported as a negative share.
+
+        Args:
+            quantity: Name of the quantity.
+
+        Returns:
+            Shares summing to one, keyed `"calibration"`, `"hand_eye"` and
+            `"pixel_noise"`. Without a hand-eye transform the `"hand_eye"` share
+            is zero and this agrees with `variance_share`.
+        """
+        parameters = self.distribution(quantity, "parameters").std ** 2
+        noise = self.distribution(quantity, "noise").std ** 2
+        total = parameters + noise
+        if total <= 0:
+            return {"calibration": 0.0, "hand_eye": 0.0, "pixel_noise": 0.0}
+        hand_eye = 0.0
+        if self.hand_eye_only is not None:
+            index = self._index_of(quantity)
+            column = self.hand_eye_only[:, index]
+            column = column[np.isfinite(column)]
+            if column.size > 1:
+                hand_eye = min(float(np.std(column, ddof=1)) ** 2, parameters)
+        return {
+            "calibration": max(parameters - hand_eye, 0.0) / total,
+            "hand_eye": hand_eye / total,
+            "pixel_noise": noise / total,
+        }
+
     def summary_lines(self, level: float = DEFAULT_LEVEL) -> Tuple[str, ...]:
         """A human summary, leading with the task-space statement."""
         lines: List[str] = [self.task.describe(), ""]
@@ -398,6 +448,20 @@ class TaskResult:
                 f"{self.parameter_source_label} and {noise:.0%} from "
                 f"{self.observation_noise_px:.3g} px of pixel noise"
             )
+            sources = self.variance_sources(quantity.name)
+            if self.hand_eye_only is not None:
+                if sources["hand_eye"] >= HAND_EYE_SHARE_FLOOR:
+                    lines.append(
+                        f"    that {calibration:.0%} is "
+                        f"{sources['calibration']:.0%} camera calibration and "
+                        f"{sources['hand_eye']:.0%} hand-eye, which says which "
+                        "of the two to spend on"
+                    )
+                else:
+                    lines.append(
+                        "    essentially all of that is the camera "
+                        "calibration, not the hand-eye transform"
+                    )
             if self.intrinsic_inflation > 1.05:
                 lines.append(
                     f"    widened {self.intrinsic_inflation:.1f}x: the scatter "
@@ -430,6 +494,7 @@ class TaskResult:
                         "calibration": self.variance_share(q.name)[0],
                         "pixel_noise": self.variance_share(q.name)[1],
                     },
+                    "variance_sources": self.variance_sources(q.name),
                     "parameters_only": self.distribution(q.name, "parameters").to_dict(level),
                     "noise_only": self.distribution(q.name, "noise").to_dict(level),
                 }
