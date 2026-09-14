@@ -68,6 +68,8 @@ class HandEyeResult:
             times the board error, because the robot's poses are in true
             millimetres and the board-derived poses are not. Zero when it was
             not measured.
+        board_scale_sigma: Relative board pitch uncertainty folded into the
+            covariance, or zero when the board was taken as exact.
     """
 
     mounting: str
@@ -85,6 +87,7 @@ class HandEyeResult:
     monte_carlo_samples: int = 0
     iterations: int = 0
     board_scale_sensitivity_mm: float = 0.0
+    board_scale_sigma: float = 0.0
 
     PARAMETER_NAMES: ClassVar[Tuple[str, ...]] = (
         "camera.rx", "camera.ry", "camera.rz", "camera.tx", "camera.ty", "camera.tz",
@@ -228,6 +231,8 @@ class HandEyeResult:
             "residual_covariance": self.residual_covariance.tolist(),
             "monte_carlo_samples": self.monte_carlo_samples,
             "optimism_factor": self.optimism_factor(),
+            "board_scale_sensitivity_mm": self.board_scale_sensitivity_mm,
+            "board_scale_sigma": self.board_scale_sigma,
             "identifiable": self.identifiable,
             "rank": self.spectrum.rank,
             "condition_number": self.spectrum.condition_number,

@@ -299,6 +299,20 @@ def board_scale(context: HandEyeContext) -> Finding:
     result = context.result
     sensitivity = float(result.board_scale_sensitivity_mm)
     random_mm = float(np.sqrt(np.diag(result.camera_covariance)[3:6]).mean())
+    stated = float(result.board_scale_sigma)
+    if stated > 0:
+        return _finding(
+            "hand_eye_board_scale", "Board scale", Severity.OK,
+            f"a board scale error moves the camera translation by "
+            f"{sensitivity:.0f} mm per unit, and the {100 * stated:.2f}% pitch "
+            f"uncertainty you stated is folded into the covariance above rather "
+            f"than left beside it",
+            board_scale_sensitivity_mm=sensitivity,
+            board_scale_sigma=stated,
+            implied_translation_error_mm=stated * sensitivity,
+            reported_translation_sd_mm=random_mm,
+            propagated=True,
+        )
     typical = TYPICAL_BOARD_SCALE_ERROR * sensitivity
     ratio = typical / random_mm if random_mm > 0 else float("inf")
     metrics = dict(
@@ -307,6 +321,8 @@ def board_scale(context: HandEyeContext) -> Finding:
         implied_translation_error_mm=typical,
         reported_translation_sd_mm=random_mm,
         ratio=float(ratio),
+        board_scale_sigma=0.0,
+        propagated=False,
     )
     shared = (
         f"a board scale error moves the camera translation by "
@@ -322,7 +338,8 @@ def board_scale(context: HandEyeContext) -> Finding:
         "reprojection error unchanged. Order a target with a calibration "
         "certificate and use its measured pitch, or measure your own against a "
         "gauge. A glass or ceramic target holds scale far better than a printed "
-        "or laminated one."
+        "or laminated one. Once you have the figure, pass it as "
+        "--board-tolerance and it goes into the interval instead of beside it."
     )
     if sensitivity <= 0:
         return _finding(

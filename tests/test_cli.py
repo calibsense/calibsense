@@ -668,3 +668,31 @@ def test_a_measured_noise_figure_survives_a_base_frame_task(tmp_path, capsys):
 
     assert noise_used(0.01) == pytest.approx(0.01)
     assert noise_used(0.5) == pytest.approx(0.5)
+
+
+@pytest.mark.slow
+def test_board_tolerance_reaches_the_hand_eye_covariance(tmp_path, capsys):
+    """The flag has to change a number, not just be accepted."""
+    from calibsense.io import save_session
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    path = tmp_path / "robot.npz"
+    save_session(session, str(path))
+
+    def reported(extra):
+        out = tmp_path / f"he{'-tol' if extra else ''}.json"
+        assert main([
+            "report", str(path), "--task", "base:800mm", "--mounting", "eye_in_hand",
+            "--json", str(out), "--samples", "200", "--seed", "0", *extra,
+        ]) in (EXIT_OK, EXIT_FINDINGS)
+        capsys.readouterr()
+        payload = json.loads(out.read_text())
+        return payload["hand_eye"], payload["tasks"][0]["quantities"][-1]
+
+    plain, plain_task = reported([])
+    stated, stated_task = reported(["--board-tolerance", "0.001"])
+
+    assert plain["board_scale_sigma"] == 0.0
+    assert stated["board_scale_sigma"] == pytest.approx(0.001)
+    # And it reaches the millimetres, which is the point of folding it in.
+    assert stated_task["expected_error"] > plain_task["expected_error"]

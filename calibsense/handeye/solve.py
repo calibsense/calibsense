@@ -439,6 +439,42 @@ def _solve_transforms(
 BOARD_SCALE_PROBE = 0.001
 
 
+def board_scale_jacobian(
+    mounting: str,
+    robots: Sequence[Pose],
+    boards: Sequence[Pose],
+    camera: Pose,
+    target: Pose,
+) -> np.ndarray:
+    """How both transforms move per unit of board scale error.
+
+    Expressed as right-multiplied local increments, which is the chart
+    `_apply` updates in and therefore the chart the covariance lives in, so the
+    result can be added to that covariance directly.
+
+    Args:
+        mounting: `"eye_in_hand"` or `"eye_to_hand"`.
+        robots: Gripper-to-base poses, one per view.
+        boards: Target-in-camera poses, one per view.
+        camera: The camera transform the unperturbed solve produced.
+        target: The target transform the unperturbed solve produced.
+
+    Returns:
+        A twelve-vector of derivatives, camera then target, each ordered
+        `[rx, ry, rz, tx, ty, tz]`. All zeros when the perturbed solve does not
+        converge.
+    """
+    scaled = [_scaled_translation(pose, 1.0 + BOARD_SCALE_PROBE) for pose in boards]
+    try:
+        moved_camera, moved_target, _ = _solve_transforms(mounting, robots, scaled)
+    except (ValidationError, np.linalg.LinAlgError):
+        return np.zeros(12)
+    return np.concatenate([
+        camera.inverse().compose(moved_camera).parameter_vector(),
+        target.inverse().compose(moved_target).parameter_vector(),
+    ]) / BOARD_SCALE_PROBE
+
+
 def board_scale_sensitivity(
     mounting: str, robots: Sequence[Pose], boards: Sequence[Pose], camera: Pose
 ) -> float:
@@ -469,7 +505,7 @@ def board_scale_sensitivity(
         error, so multiplying by 0.001 gives the shift from a 0.1% board error.
         Zero when the perturbed solve does not converge.
     """
-    scaled = [replace_translation(pose, 1.0 + BOARD_SCALE_PROBE) for pose in boards]
+    scaled = [_scaled_translation(pose, 1.0 + BOARD_SCALE_PROBE) for pose in boards]
     try:
         perturbed, _, _ = _solve_transforms(mounting, robots, scaled)
     except (ValidationError, np.linalg.LinAlgError):
@@ -483,7 +519,7 @@ def board_scale_sensitivity(
     return shift / BOARD_SCALE_PROBE
 
 
-def replace_translation(pose: Pose, scale: float) -> Pose:
+def _scaled_translation(pose: Pose, scale: float) -> Pose:
     """The same pose with its translation scaled.
 
     Args:
@@ -504,6 +540,7 @@ def solve_hand_eye(
     monte_carlo: bool = True,
     n_samples: int = 200,
     seed: Optional[int] = 0,
+    board_scale_sigma: float = 0.0,
 ) -> HandEyeResult:
     """Estimate the hand-eye transform and its covariance.
 
@@ -521,6 +558,12 @@ def solve_hand_eye(
             number is not going to be quoted.
         n_samples: Calibrations to resample when `monte_carlo` is set.
         seed: Seed for the resampling.
+        board_scale_sigma: Relative standard deviation of the target's pitch,
+            so `0.001` states a board good to a tenth of a per cent. Zero, the
+            default, treats the board as exact and leaves the covariance
+            describing random error alone — the board-scale finding then says
+            what that assumption is worth. Inventing a figure here would be
+            worse than saying so, which is why there is no default but zero.
 
     Returns:
         The transform, its covariance, and the residuals behind them.
@@ -576,12 +619,32 @@ def solve_hand_eye(
         board_scale_sensitivity_mm=board_scale_sensitivity(
             mounting, robots, boards, camera
         ),
+        board_scale_sigma=float(board_scale_sigma),
     )
+    if board_scale_sigma > 0:
+        # A board scale error is one number, so its contribution to the
+        # covariance is rank one: sigma^2 * J J'. Exact to first order, which is
+        # the order the rest of this covariance is computed at, and the
+        # derivative is already in hand from the sensitivity probe. Resampling
+        # it would cost hundreds of solves and add Monte Carlo noise to a term
+        # that has a closed form.
+        jacobian = board_scale_jacobian(mounting, robots, boards, camera, target)
+        systematic = float(board_scale_sigma) ** 2 * np.outer(jacobian, jacobian)
+        result = replace(
+            result,
+            covariance=result.covariance + systematic,
+            residual_covariance=result.residual_covariance + systematic,
+        )
     if not monte_carlo:
         return result
     empirical, _ = resample_covariance(
         result, fit, session, robots, weights, n_samples, seed
     )
+    if board_scale_sigma > 0:
+        jacobian = board_scale_jacobian(mounting, robots, boards, camera, target)
+        empirical = empirical + float(board_scale_sigma) ** 2 * np.outer(
+            jacobian, jacobian
+        )
     return replace(
         result,
         covariance=empirical,

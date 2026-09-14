@@ -306,6 +306,7 @@ def run_audit(
     forecast_samples: int = 800,
     observation_noise_px: Optional[float] = None,
     widen: bool = True,
+    board_scale_sigma: float = 0.0,
 ) -> Audit:
     """Run the whole audit: refit, cross-validate, diagnose, propagate, forecast.
 
@@ -336,6 +337,10 @@ def run_audit(
             choice only when you have independent reason to believe that model —
             a measured noise floor, say — and need the figure not to carry the
             correction's deliberate conservatism.
+        board_scale_sigma: Relative uncertainty in the target's pitch, folded
+            into the hand-eye covariance. Zero treats the board as exact, which
+            is what every calibration tool does and what the board-scale finding
+            exists to put a number on.
 
     Returns:
         The audit.
@@ -389,7 +394,10 @@ def run_audit(
         from ..handeye import diagnose_hand_eye, solve_hand_eye
 
         try:
-            hand_eye = solve_hand_eye(fit, session, mounting, seed=seed)
+            hand_eye = solve_hand_eye(
+                fit, session, mounting, seed=seed,
+                board_scale_sigma=board_scale_sigma,
+            )
             hand_eye_diagnosis = diagnose_hand_eye(
                 hand_eye,
                 list(session.robot.aligned_with(observations)),

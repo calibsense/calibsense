@@ -318,6 +318,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the question the report puts back to the reader")
     _add_calibration_output_arguments(report)
     report.add_argument(
+        "--board-tolerance", type=float, default=0.0, metavar="RELATIVE",
+        help=(
+            "relative uncertainty in the target's pitch, e.g. 0.001 for a board "
+            "good to 0.1%%; folded into the hand-eye covariance. Without it the "
+            "board is treated as exact and the report says what that costs"
+        ),
+    )
+    report.add_argument(
         "--no-widen", action="store_true",
         help=(
             "propagate the classical covariance instead of widening it to the "
@@ -527,6 +535,7 @@ def _report(args: argparse.Namespace) -> int:
         folds=args.folds, n_samples=args.samples, mounting=args.mounting,
         observation_noise_px=args.noise_px,
         seed=args.seed, widen=not args.no_widen,
+        board_scale_sigma=args.board_tolerance,
     )
     if needs_hand_eye:
         if audit.hand_eye is None:
@@ -542,6 +551,7 @@ def _report(args: argparse.Namespace) -> int:
             ReportMetadata(**metadata_fields), folds=args.folds,
             n_samples=args.samples, mounting=args.mounting, seed=args.seed,
             observation_noise_px=args.noise_px, widen=not args.no_widen,
+            board_scale_sigma=args.board_tolerance,
         )
 
     print(render_text(audit), end="")

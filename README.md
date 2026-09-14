@@ -321,8 +321,11 @@ and the board-derived poses are in board millimetres, so the translation absorbs
 the disagreement at about seven times the board error — at 0.1%, that is 0.7 mm
 against a reported random error of 0.25 mm on the rig in the test suite. The
 hand-eye report measures that sensitivity for your own rig and says what it
-costs, but it is quoted beside the interval rather than folded into it. Order a
-target with a calibration certificate if the millimetres matter.
+costs. Pass `--board-tolerance 0.001` if you know your target's pitch
+uncertainty and it goes into the covariance rather than beside it; without it
+the board is treated as exact, because a number invented here would be worse
+than a stated assumption. Order a target with a calibration certificate if the
+millimetres matter.
 
 ## Author
 

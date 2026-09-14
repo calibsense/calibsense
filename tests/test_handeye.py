@@ -516,3 +516,73 @@ def test_a_residual_only_covariance_is_a_warning_not_a_footnote():
     )
     assert clean.severity is Severity.OK
     assert clean.metrics["optimism_factor"] > 1.5
+
+
+@pytest.mark.parametrize("mounting", ["eye_in_hand", "eye_to_hand"])
+def test_a_stated_board_tolerance_widens_the_covariance(mounting):
+    """The systematic goes into the interval instead of beside it.
+
+    A board scale error is a single number, so its contribution is rank one and
+    has a closed form: sigma^2 J J'. Resampling it would cost hundreds of solves
+    and add Monte Carlo noise to a term that does not need any.
+    """
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session(mounting)
+    fit = instrument(session, RefitOptions())
+
+    def translation_sd(sigma):
+        result = solve_hand_eye(
+            fit, session, mounting=mounting, monte_carlo=False,
+            board_scale_sigma=sigma,
+        )
+        return np.linalg.norm(
+            np.sqrt(np.diag(np.asarray(result.camera_covariance, float))[3:6])
+        ), result
+
+    exact, plain = translation_sd(0.0)
+    stated, widened = translation_sd(0.001)
+
+    assert plain.board_scale_sigma == 0.0
+    assert widened.board_scale_sigma == pytest.approx(0.001)
+    # How much it adds depends on how large the random error already was, which
+    # differs by a factor of two between the mountings, so what is asserted is
+    # that it adds rather than how much.
+    assert stated > 1.2 * exact
+
+    # Rank one, so doubling the tolerance doubles that term's contribution and
+    # the total grows as the quadrature sum rather than linearly.
+    doubled, _ = translation_sd(0.002)
+    added_once = stated ** 2 - exact ** 2
+    added_twice = doubled ** 2 - exact ** 2
+    assert added_twice == pytest.approx(4.0 * added_once, rel=0.02)
+
+
+def test_the_board_finding_stops_warning_once_the_tolerance_is_stated():
+    """The note exists to get a number out of the reader; it should then stop."""
+    from calibsense.handeye.diagnose import diagnose_hand_eye
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    robots = list(session.robot.aligned_with(session.observations))
+
+    def finding_for(sigma):
+        result = solve_hand_eye(
+            fit, session, mounting="eye_in_hand", monte_carlo=False,
+            board_scale_sigma=sigma,
+        )
+        return next(
+            f for f in diagnose_hand_eye(result, robots, list(fit.poses)).findings
+            if f.cause == "hand_eye_board_scale"
+        )
+
+    silent = finding_for(0.0)
+    assert silent.severity is Severity.NOTE
+    assert silent.metrics["propagated"] is False
+    assert "--board-tolerance" in silent.action
+
+    stated = finding_for(0.001)
+    assert stated.severity is Severity.OK
+    assert stated.metrics["propagated"] is True
+    assert stated.metrics["board_scale_sigma"] == pytest.approx(0.001)
