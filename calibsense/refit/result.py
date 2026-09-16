@@ -137,9 +137,32 @@ class Conditioning:
         condition_number: Raw condition number. Depends on the units the
             parameters happen to be measured in, so it is reported for
             completeness rather than for judgement.
-        scaled_condition_number: Condition number after Jacobi scaling. This is
-            the one to read: it is unit-free, and it is what separates a
-            well-posed capture (order 1e3) from a degenerate one (1e10 and up).
+        scaled_condition_number: Condition number after Jacobi scaling, which
+            makes it unit-free and therefore the one worth reading.
+
+            It used to say here that this separates a well-posed capture
+            (order 1e3) from a degenerate one (1e10 and up). Measured against
+            known truth over 144 rigs spanning flat-and-single-depth to
+            40 degrees of tilt at three distances, the first half is about
+            right and the second is far too lax. Median focal-length error by
+            band:
+
+                < 1e3     2.1 px      1e5 - 1e6    49.5 px
+                1e3 - 1e4 5.5 px      1e6 - 1e7   143.2 px
+                1e4 - 1e5 19.2 px     > 1e7       identifiability already gone
+
+            Identifiability fails around 1e6, not 1e10, so a capture is
+            unusable four decades earlier than this claimed.
+
+            What the number does *not* do is say whether the interval can be
+            trusted. Across every fit that was both identifiable and at its own
+            optimum — 104 of them, spanning 5.4e2 to 9.8e5 — the focal length
+            landed within 1.8 standard deviations of the truth, and the median
+            was 0.67. The condition number predicts how *large* the error is,
+            not whether the error bar covers it. `identifiable` and `at_optimum`
+            together are what decide that, and either alone is not enough: the
+            worst ratio was 61 sigma among identifiable fits and 4658 among
+            converged ones.
         weak_directions: Parameter combinations the data does not determine.
         participation: Per-parameter share of the weak subspace, in `[0, 1]`.
         singular_views: Views whose own pose block was rank deficient.

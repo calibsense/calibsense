@@ -626,3 +626,51 @@ def test_a_view_that_alone_determines_a_direction_cannot_blow_the_correction_up(
     steps = leave_one_out_steps(information, scores, np.linalg.pinv(information.sum(axis=0)))
     assert np.all(np.isfinite(steps))
     assert np.abs(steps).max() <= (1.0 - MAX_VIEW_LEVERAGE) ** -0.5 * 2.0
+
+
+@pytest.mark.slow
+def test_the_interval_covers_whenever_the_two_flags_allow_it():
+    """What the conditioning report is actually worth, measured against truth.
+
+    The scaled condition number says how *large* the error will be — the median
+    focal-length error runs 2 px below 1e3 and 143 px between 1e6 and 1e7 — and
+    says nothing about whether the interval covers it. `identifiable` and
+    `at_optimum` are what decide that, and neither is sufficient alone: across
+    the same rigs the worst deviation was 61 sigma among identifiable fits and
+    far worse among merely converged ones.
+
+    A reduced sweep of the measurement behind `Conditioning`'s docstring.
+    """
+    from calibsense.core.session import CalibrationSession
+    from calibsense.refit import RefitOptions, instrument
+
+    from . import rigs
+
+    worst, checked, conditions = 0.0, 0, []
+    for tilt in ((0.2, 1.5), (4.0, 8.0), (15.0, 25.0)):
+        for depths in ((800.0,), (400.0, 800.0, 1200.0)):
+            for seed in range(3):
+                poses = rigs.poses(tilt_degrees=tilt, distances_mm=depths, seed=seed)
+                capture = rigs.synthesise(
+                    rigs.WIDE_PINHOLE, rigs.BOARD, poses, rigs.IMAGE_SIZE,
+                    noise_px=0.25, seed=400 + seed,
+                )
+                fit = instrument(
+                    CalibrationSession(observations=capture.observations),
+                    RefitOptions(),
+                )
+                if not (fit.conditioning.identifiable and fit.at_optimum):
+                    continue
+                deviation = float(fit.covariance.intrinsic_std()[0])
+                if deviation <= 0:
+                    continue
+                worst = max(worst, abs(fit.camera.fx - rigs.WIDE_PINHOLE.fx) / deviation)
+                conditions.append(fit.conditioning.scaled_condition_number)
+                checked += 1
+
+    assert checked >= 10
+    # Nearly two decades of conditioning in this reduced sweep — the full one
+    # behind the docstring covers three and a half — and the interval holds
+    # across all of it.
+    assert max(conditions) / min(conditions) > 50.0
+    assert worst < 3.0, f"a fit both identifiable and converged was {worst:.1f} sd out"
