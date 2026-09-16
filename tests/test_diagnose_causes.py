@@ -532,3 +532,66 @@ def test_the_ratio_rises_with_model_complexity(pinhole, checkerboard):
     modest = cross_validate(session, RefitOptions(distortion_terms=5))
     greedy = cross_validate(session, RefitOptions(distortion_terms=14))
     assert greedy.ratio > modest.ratio
+
+
+@pytest.mark.slow
+def test_a_critical_coverage_finding_predicts_a_wrong_periphery():
+    """The threshold is right, and the obvious way to check it is wrong.
+
+    open-items held that the coverage cuts fire CRITICAL on captures whose focal
+    length is recovered to well under a sigma. That is true and it is not a
+    defect: the focal length is not what coverage is about. Measured where the
+    finding says the problem is — out at the frame edge, where the distortion
+    coefficients are extrapolating — a CRITICAL capture is wrong by two orders
+    of magnitude more than a WARNING one, while the two are indistinguishable in
+    the middle of the frame.
+    """
+    import numpy as np
+
+    from calibsense.core.session import CalibrationSession
+    from calibsense.diagnose.base import DiagnosticContext
+    from calibsense.diagnose.coverage import ImageCoverage
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.refit.projection import projector_for
+
+    truth = rigs.WIDE_PINHOLE
+    width, height = rigs.IMAGE_SIZE
+    xs, ys = np.meshgrid(
+        np.linspace(10, width - 10, 21), np.linspace(10, height - 10, 21)
+    )
+    pixels = np.stack([xs.ravel(), ys.ravel()], axis=1)
+    centre = np.array([(width - 1) / 2.0, (height - 1) / 2.0])
+    radius = np.linalg.norm(pixels - centre, axis=1)
+    outer = radius >= 0.5 * radius.max()
+
+    by_severity = {}
+    for lateral in (10.0, 80.0, 190.0, 260.0):
+        for seed in range(3):
+            capture = rigs.synthesise(
+                truth, rigs.BOARD,
+                rigs.poses(lateral_mm=lateral, distances_mm=(400.0, 800.0, 1200.0),
+                           seed=seed),
+                rigs.IMAGE_SIZE, noise_px=0.25, seed=700 + seed,
+            )
+            fit = instrument(
+                CalibrationSession(observations=capture.observations), RefitOptions()
+            )
+            if not (fit.conditioning.identifiable and fit.at_optimum):
+                continue
+            finding = ImageCoverage().run(
+                DiagnosticContext(fit, capture.observations)
+            )
+            landed = projector_for(fit.camera).backproject(fit.camera, pixels, 800.0)
+            wanted = projector_for(truth).backproject(truth, pixels, 800.0)
+            error = np.linalg.norm(landed - wanted, axis=1)
+            by_severity.setdefault(finding.severity, []).append(
+                float(np.median(error[outer]))
+            )
+
+    critical = by_severity.get(Severity.CRITICAL, [])
+    milder = [
+        e for sev, errors in by_severity.items() if sev is not Severity.CRITICAL
+        for e in errors
+    ]
+    assert critical and milder, by_severity
+    assert np.median(critical) > 10.0 * np.median(milder)
