@@ -369,3 +369,85 @@ def test_the_legacy_hint_is_withheld_where_the_flag_cannot_be_the_cause():
     assert "legacy_pattern" not in reason
 
     assert "no ArUco markers either" in detector._no_corners_reason(0)
+
+
+# --------------------------------------------------------------------------
+# the circle grid's centroid bias
+# --------------------------------------------------------------------------
+
+def _ellipse_centre(conic):
+    """Centre of a conic given as a 3x3 symmetric matrix."""
+    a, b, d = conic[0, 0], conic[0, 1], conic[0, 2]
+    c, e = conic[1, 1], conic[1, 2]
+    return np.linalg.solve(np.array([[a, b], [b, c]]), -np.array([d, e]))
+
+
+def _centroid_bias_px(focal, radius_mm, depth_mm, tilt_deg):
+    """The gap between a circle's projected centre and its projected centroid.
+
+    Exact rather than rendered: a perspective map sends a circle to an ellipse
+    and an ellipse's centroid is its centre, so both sides are closed forms and
+    neither the renderer's own bias nor the blob detector is in the way.
+    """
+    angle = np.radians(tilt_deg)
+    rotation = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, np.cos(angle), -np.sin(angle)],
+        [0.0, np.sin(angle), np.cos(angle)],
+    ])
+    homography = (
+        np.diag([focal, focal, 1.0])
+        @ np.column_stack([rotation[:, 0], rotation[:, 1], [0.0, 0.0, depth_mm]])
+    )
+    inverse = np.linalg.inv(homography)
+    projected = inverse.T @ np.diag([1.0, 1.0, -radius_mm ** 2]) @ inverse
+    centre = homography @ np.array([0.0, 0.0, 1.0])
+    return float(np.linalg.norm(_ellipse_centre(projected) - centre[:2] / centre[2]))
+
+
+def test_the_centroid_bias_peaks_near_45_degrees_rather_than_growing():
+    """The usual description of this effect, and open-items', has it as rising
+    with obliquity. It rises to a maximum near 45 degrees and falls away."""
+    by_tilt = {
+        tilt: _centroid_bias_px(700.0, 6.0, 700.0, tilt)
+        for tilt in (0, 10, 20, 30, 40, 50, 60, 70)
+    }
+    assert by_tilt[0] == pytest.approx(0.0, abs=1e-9)
+    peak = max(by_tilt, key=by_tilt.get)
+    assert 35 <= peak <= 55, by_tilt
+    assert by_tilt[60] < by_tilt[40]
+    assert by_tilt[70] < by_tilt[30]
+
+
+def test_the_centroid_bias_is_quadratic_in_the_angular_radius():
+    """Which is why it is governed by circle size and distance, not by tilt.
+
+    Doubling the radius or halving the distance each cost four times as much,
+    where the whole span of tilt from 10 to 45 degrees costs about three.
+    """
+    base = _centroid_bias_px(700.0, 6.0, 700.0, 40.0)
+    assert _centroid_bias_px(700.0, 12.0, 700.0, 40.0) == pytest.approx(
+        4.0 * base, rel=0.05
+    )
+    assert _centroid_bias_px(700.0, 6.0, 350.0, 40.0) == pytest.approx(
+        4.0 * base, rel=0.05
+    )
+
+
+def test_the_centroid_bias_is_small_at_a_normal_working_distance():
+    """Negligible for a small target far away, material for big circles close."""
+    far = _centroid_bias_px(700.0, 6.0, 700.0, 40.0)
+    near = _centroid_bias_px(700.0, 6.0, 300.0, 40.0)
+    assert far < 0.05
+    assert near > 0.1
+
+
+def test_the_circle_grid_spec_cannot_evaluate_the_bias():
+    """It records the spacing and not the diameter, which is what the bias needs.
+
+    Pinned because this is the gap that has to close before the bias can be
+    warned about, let alone corrected.
+    """
+    grid = CircleGrid(4, 11, 20.0, True)
+    assert hasattr(grid, "spacing")
+    assert not any("diameter" in f or "radius" in f for f in vars(grid))

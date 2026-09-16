@@ -28,9 +28,39 @@ class CircleGridDetector(TargetDetector):
     """Finds the circle centres of a symmetric or asymmetric grid.
 
     Centres come from blob fitting rather than corner refinement, so no extra
-    sub-pixel pass is applied. The perspective bias of a projected circle's
-    centroid is a real and often overlooked error source for this target, and it
-    is reported as a diagnostic in a later milestone rather than corrected here.
+    sub-pixel pass is applied.
+
+    The perspective bias of a projected circle's centroid is real, systematic
+    and uncorrected here. A perspective map sends a circle to an ellipse, whose
+    centroid is its centre, and that centre is *not* the projection of the
+    circle's centre — so every detected point is offset, in a direction set by
+    the tilt rather than by noise, and it does not average down over points or
+    views.
+
+    Computed exactly from the conic rather than estimated, for a circle of
+    radius `r` seen at distance `d` through a lens of focal length `f`:
+
+        bias ≈ 0.49 · f · (r / d)² · g(tilt),  g peaking at 1 near 45 degrees
+
+    Two things follow that the usual description of this effect gets wrong.
+    It does **not** simply grow with obliquity: it rises to a maximum around 45
+    degrees and falls away again, reaching the same 0.0223 px at 60 degrees as
+    at 30. And it is **quadratic in the angular radius**, so it is governed by
+    how big the circles look rather than by how oblique they are — halving the
+    working distance costs four times as much as going from 10 to 40 degrees of
+    tilt.
+
+    Worked, for a 6 mm circle through a 700 px lens at 40 degrees:
+
+        700 mm   0.025 px      a tenth of a typical 0.2 px noise sigma
+        500 mm   0.050 px
+        300 mm   0.138 px      most of a noise sigma, and systematic
+
+    So it is negligible for a small target at a normal working distance and
+    matters for large circles seen close. calibsense cannot tell which case a
+    user is in, because `CircleGrid` records the centre-to-centre spacing and
+    not the circle diameter — correcting the bias, or even warning about it,
+    needs that number first.
     """
 
     kind: ClassVar[str] = "circle_grid"
