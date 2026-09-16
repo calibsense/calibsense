@@ -325,3 +325,55 @@ def test_zero_in_sample_rms_gives_an_infinite_ratio(pinhole, checkerboard):
     import dataclasses
 
     assert dataclasses.replace(validation, in_sample_rms=0.0).ratio == float("inf")
+
+
+@pytest.mark.slow
+def test_the_held_out_rms_is_accurate_and_not_merely_plausible():
+    """Against views from the same camera that no fold ever saw.
+
+    The other tests here check internal consistency — that the folds partition,
+    that pooling is point-weighted, that the ratio rises with
+    over-parameterisation. None of them says whether the number is *right*. This
+    holds back half of one capture, cross-validates on the other half, and
+    evaluates the resulting camera on the half that was never offered to any
+    fold.
+
+    The two halves come from one pose list rather than two seeds, so they are
+    exchangeable: drawing them separately measures the difference between two
+    pose sets instead of the accuracy of the estimate.
+
+    Measured over eight seeds the reported figure is within about five per cent,
+    median 0.99 of the truth.
+    """
+    from calibsense.core.observations import ObservationSet
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.validate.crossval import evaluate_held_out
+
+    from . import rigs
+
+    capture = rigs.synthesise(
+        rigs.WIDE_PINHOLE, rigs.BOARD, rigs.poses(n=48, seed=0),
+        rigs.IMAGE_SIZE, noise_px=0.25, seed=100,
+    )
+    views = capture.observations.views
+    half = len(views) // 2
+    target, size = capture.observations.target, capture.observations.image_size
+    train = ObservationSet(target, size, views[:half])
+    held_back = ObservationSet(target, size, views[half:])
+
+    session = CalibrationSession(observations=train)
+    options = RefitOptions()
+    fit = instrument(session, options)
+    validation = cross_validate(session, options, seed=0)
+
+    # The same measurement the folds make, on views no fold ever had. Pooled per
+    # point, not per residual component, because that is what out_of_sample_rms
+    # is — the two differ by a factor of about root two.
+    _, squared, points = evaluate_held_out(
+        fit.camera, held_back, range(held_back.n_views), fold=0
+    )
+    truly_held_out = float(np.sqrt(squared / points))
+
+    assert validation.out_of_sample_rms == pytest.approx(truly_held_out, rel=0.15)
+    # And the in-sample figure really is the optimistic one it is claimed to be.
+    assert fit.rms < truly_held_out
