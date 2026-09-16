@@ -238,9 +238,26 @@ def test_too_little_data_for_any_uncertainty_is_refused(pinhole, checkerboard):
 
 
 def test_working_distances_match_the_capture(good_session, good_capture):
+    """Against the truth poses' board centres, which is what the phrase means.
+
+    This used to compare against `Pose.distance_mm`, which is the norm of the
+    translation — the very quantity `working_distances_mm` returned, so the
+    assertion held whatever the geometry was. The generator places the board's
+    *centre* at the requested distance, and measuring to the origin corner
+    instead scattered a capture taken at 400, 800 and 1200 mm across 383 to 443
+    at the near plane alone.
+    """
     fit = instrument(good_session)
-    truth = np.array([p.distance_mm for p in good_capture.poses])
+    centre = (
+        good_capture.observations.target.object_points().mean(axis=0).reshape(1, 3)
+    )
+    truth = np.array(
+        [float(np.linalg.norm(p.apply(centre)[0])) for p in good_capture.poses]
+    )
     assert np.allclose(np.sort(fit.working_distances_mm()), np.sort(truth), rtol=0.05)
+
+    origins = np.array([p.distance_mm for p in good_capture.poses])
+    assert not np.allclose(np.sort(fit.working_distances_mm()), np.sort(origins), rtol=0.02)
 
 
 def test_residual_arrays_line_up_with_the_views(good_session):

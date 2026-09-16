@@ -97,12 +97,21 @@ def test_frontoparallel_rig_has_near_zero_tilt():
 
 
 def test_board_distance_is_measured_to_the_centre_not_the_origin():
-    """A 200 mm board's origin corner is over 100 mm from its centre."""
+    """A board's origin corner is a long way from its centre.
+
+    This used to assert that the diagnostics and the fit *disagreed*, which
+    pinned the bug rather than the behaviour: they were two implementations of
+    one idea and only one of them was right. They are one implementation now, so
+    what is checked is that it measures to the centre.
+    """
     context = rigs.context(pose_set=rigs.poses(distances_mm=(700.0,), n=6))
     centre_distances = context.board_distances_mm
-    origin_distances = context.fit.working_distances_mm()
     assert np.abs(centre_distances - 700.0).max() < 60.0
-    assert not np.allclose(centre_distances, origin_distances, atol=1.0)
+
+    origins = np.array([p.distance_mm for p in context.fit.poses])
+    assert not np.allclose(centre_distances, origins, atol=1.0)
+    # And the two sides of the report now say the same thing.
+    assert np.allclose(centre_distances, context.fit.working_distances_mm())
 
 
 def test_weak_parameters_is_empty_when_identifiable():

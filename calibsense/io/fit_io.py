@@ -68,6 +68,7 @@ def save_fit(fit: InstrumentedFit, path: str) -> str:
         "options": fit.options.to_dict(),
         "refitted": fit.refitted,
         "prior_rms": fit.prior_rms,
+        "board_centre_mm": list(fit.board_centre_mm),
         "relative_decrement": fit.relative_decrement,
         "initial_guess": fit.initial_guess,
         "intrinsic_names": list(equations.intrinsic_names),
@@ -161,6 +162,9 @@ def load_fit(path: str) -> InstrumentedFit:
         refitted=bool(manifest.get("refitted", True)),
         options=options,
         prior_rms=manifest.get("prior_rms"),
+        # Absent from bundles written before working distances were measured to
+        # the pattern centre; zeros fall back to the board frame's origin.
+        board_centre_mm=tuple(manifest.get("board_centre_mm", (0.0, 0.0, 0.0))),
         cross_validation=(
             CrossValidation.from_dict(manifest["cross_validation"])
             if manifest.get("cross_validation")

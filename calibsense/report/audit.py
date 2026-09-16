@@ -155,7 +155,11 @@ class Audit:
     def caveats(self) -> Tuple[str, ...]:
         """Why the figures in this report cannot simply be read at face value.
 
-        Two conditions qualify, and they are no longer the same condition. An
+        Three conditions qualify, and they are no longer the same condition. A
+        calibration file carrying four distortion coefficients and no declared
+        model is undecidable between Brown-Conrady and Kannala-Brandt, and when
+        the report instruments it in place rather than refitting, every figure
+        below describes a model that was guessed. An
         unidentifiable calibration leaves a parameter direction with no variance
         at all, so every interval derived from it is narrower than the truth and
         nothing in the pipeline can repair that.
@@ -182,6 +186,16 @@ class Audit:
         # banner in the PDF and a second line there would be a wrapped
         # afterthought rather than a warning.
         reasons: List[str] = []
+        prior = self.session.prior
+        if prior is not None and prior.model_ambiguous and not self.fit.refitted:
+            # Only when the parameters were instrumented in place. A refit
+            # estimates under a model calibsense chose, so the ambiguity moved
+            # the starting guess and nothing else; without one, the model being
+            # audited is the one the reader had to guess at.
+            reasons.append(
+                "The audited file names no distortion model - it was read as "
+                "pinhole and may not be"
+            )
         if not self.fit.conditioning.identifiable:
             reasons.append(
                 "This calibration does not determine every parameter - "

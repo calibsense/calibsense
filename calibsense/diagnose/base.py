@@ -128,13 +128,15 @@ class DiagnosticContext:
         """Distance from the camera to each board's *centre*, in millimetres.
 
         Measured to the centre of the point pattern rather than to the board
-        frame's origin corner, which for a 200 mm board differs by over a
-        hundred millimetres and would distort a depth ratio.
+        frame's origin corner, which on a 9x6 board of 25 mm squares differs by
+        up to 84 mm per view and would distort a depth ratio.
+
+        Deferred to the fit rather than recomputed here. These were two
+        implementations of one idea and they disagreed, so the refit summary and
+        the diagnostics reported different depth ranges for the same capture.
+        One definition is the fix; agreeing by convention is not.
         """
-        centre = self.observations.target.object_points().mean(axis=0).reshape(1, 3)
-        return np.array(
-            [float(np.linalg.norm(pose.apply(centre)[0])) for pose in self.fit.poses]
-        )
+        return self.fit.working_distances_mm()
 
     @cached_property
     def all_image_points(self) -> np.ndarray:

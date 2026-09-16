@@ -68,6 +68,17 @@ class CalibrationRecord:
         object.__setattr__(self, "image_size", (width, height))
         object.__setattr__(self, "metadata", dict(self.metadata))
 
+    @property
+    def model_ambiguous(self) -> bool:
+        """Whether the reader could not tell which distortion family this is.
+
+        True only for a file that carries four coefficients and names no model,
+        which is genuinely undecidable between Brown-Conrady and
+        Kannala-Brandt — the same four numbers mean different things in each.
+        The reader returns pinhole and sets this rather than guessing silently.
+        """
+        return bool(self.metadata.get("model_ambiguous", False))
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a plain JSON-compatible dictionary."""
         return {
@@ -252,6 +263,12 @@ class CalibrationSession:
             rms = self.prior.reported_rms
             reported = f", reported RMS {rms:.4f} px" if rms is not None else ""
             lines.append(f"prior        {self.prior.source}{reported}")
+            if self.prior.model_ambiguous:
+                lines.append(
+                    "             WARNING this file carries four distortion "
+                    "coefficients and names no model, so it is undecidable "
+                    "between Brown-Conrady and Kannala-Brandt; read as pinhole"
+                )
         if self.robot is not None:
             lines.append(f"robot poses  {len(self.robot.poses)} from {self.robot.source}")
         return tuple(lines)

@@ -217,6 +217,11 @@ class InstrumentedFit:
         equations: The assembled normal equations.
         refitted: Whether the parameters were re-estimated.
         options: The settings this fit was produced under.
+        board_centre_mm: The centre of the point pattern in board coordinates.
+            Carried so `working_distances_mm` can measure to it. Zeros mean it
+            was not recorded, which happens only for a fit restored from a
+            bundle written before it was, and falls back to the board frame's
+            origin.
         prior_rms: The RMS the session's existing calibration claimed, if any.
         cross_validation: Out-of-sample results, when they were computed. Not
             produced by `instrument`, which fits once; attach it with
@@ -235,6 +240,7 @@ class InstrumentedFit:
     equations: NormalEquations
     refitted: bool
     options: RefitOptions
+    board_centre_mm: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     prior_rms: Optional[float] = None
     cross_validation: Optional["CrossValidation"] = None
     relative_decrement: float = 0.0
@@ -276,8 +282,22 @@ class InstrumentedFit:
         return self.relative_decrement < OPTIMUM_DECREMENT_TOLERANCE
 
     def working_distances_mm(self) -> np.ndarray:
-        """Distance from the camera to each view's board centre, in millimetres."""
-        return np.array([float(np.linalg.norm(p.translation)) for p in self.poses])
+        """Distance from the camera to each view's board centre, in millimetres.
+
+        Measured to the centre of the point pattern, not to the board frame's
+        origin corner. This used to say the former and compute the latter, which
+        put the refit summary and the diagnostics on different definitions of
+        the same word: on a 9x6 board of 25 mm squares they disagreed by up to
+        84 mm per view and reported different depth ranges for one capture.
+
+        Falls back to the origin when `board_centre_mm` was not recorded, which
+        is only the case for a fit restored from an old bundle.
+        """
+        centre = np.asarray(self.board_centre_mm, dtype=float)
+        return np.array([
+            float(np.linalg.norm(pose.apply(centre.reshape(1, 3))[0]))
+            for pose in self.poses
+        ])
 
     def summary_lines(self) -> Tuple[str, ...]:
         """A short human summary, used by the CLI and by reports."""

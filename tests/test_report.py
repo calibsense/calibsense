@@ -19,7 +19,7 @@ import zlib
 import numpy as np
 import pytest
 
-from calibsense.core.session import CalibrationSession
+from calibsense.core.session import CalibrationRecord, CalibrationSession
 from calibsense.errors import SerializationError, ValidationError
 from calibsense.refit import RefitOptions, instrument
 from calibsense.report import (
@@ -594,3 +594,75 @@ def test_the_outlier_cost_reaches_both_renderers(outlier_audit):
     assert b"OUTLIER VIEWS ARE COSTING" in pdf_text(render_pdf(outlier_audit))
     payload = json.loads(render_json(outlier_audit))
     assert payload["without_outliers"]["dropped"]
+
+
+# --------------------------------------------------------------------------
+# an ambiguous distortion model reaching the reader
+# --------------------------------------------------------------------------
+
+def _ambiguous_session(observations):
+    """A session whose prior names no distortion model and carries four terms."""
+    from calibsense.core.camera import PinholeBrownConrady
+
+    prior = CalibrationRecord(
+        PinholeBrownConrady(700.0, 702.0, 639.5, 359.5, [-0.2, 0.05, 0.0, 0.0]),
+        (1280, 720),
+        "opencv:shipped.yml",
+        metadata={"model_ambiguous": True},
+    )
+    return CalibrationSession(observations=observations, prior=prior)
+
+
+@pytest.mark.slow
+def test_an_ambiguous_model_is_a_caveat_when_the_fit_was_not_refitted():
+    """The signal was computed, tested and shown to nobody.
+
+    Four distortion coefficients with no declared model is undecidable between
+    Brown-Conrady and Kannala-Brandt — the same four numbers mean different
+    things in each. Instrumenting such a file in place means every figure in the
+    report describes a model that was guessed.
+    """
+    from calibsense.refit import RefitOptions
+
+    capture = rigs.healthy()
+    session = _ambiguous_session(capture.observations)
+    audit = run_audit(
+        session, RefitOptions(refit=False), n_samples=200, forecast_samples=150
+    )
+    assert not audit.fit.refitted
+    assert any("names no distortion model" in c for c in audit.caveats())
+    assert not audit.trustworthy
+
+
+@pytest.mark.slow
+def test_refitting_settles_the_ambiguity_so_it_is_not_a_caveat():
+    """A refit estimates under a model calibsense chose, so the guess moved only
+    the starting point. Warning about it then would be noise."""
+    capture = rigs.healthy()
+    audit = run_audit(
+        _ambiguous_session(capture.observations), n_samples=200, forecast_samples=150
+    )
+    assert audit.fit.refitted
+    assert not any("names no distortion model" in c for c in audit.caveats())
+
+
+def test_the_session_summary_says_the_model_was_undecidable():
+    capture = rigs.healthy()
+    text = "\n".join(_ambiguous_session(capture.observations).summary_lines())
+    assert "undecidable" in text
+    assert "Kannala-Brandt" in text
+
+
+def test_an_unambiguous_prior_says_nothing():
+    from calibsense.core.camera import PinholeBrownConrady
+
+    capture = rigs.healthy()
+    prior = CalibrationRecord(
+        PinholeBrownConrady(700.0, 702.0, 639.5, 359.5, [-0.2, 0.05, 0.0, 0.0, 0.01]),
+        (1280, 720),
+        "opencv:shipped.yml",
+        metadata={"model_ambiguous": False},
+    )
+    session = CalibrationSession(observations=capture.observations, prior=prior)
+    assert not prior.model_ambiguous
+    assert "undecidable" not in "\n".join(session.summary_lines())

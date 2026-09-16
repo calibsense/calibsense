@@ -183,6 +183,9 @@ def instrument(
         equations=equations,
         refitted=options.refit,
         options=options,
+        board_centre_mm=tuple(
+            observations.target.object_points().mean(axis=0).astype(float)
+        ),
         prior_rms=session.prior.reported_rms if session.prior else None,
         relative_decrement=decrement / max(equations.cost, 1e-30),
         initial_guess=guess,
