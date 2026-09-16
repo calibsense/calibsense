@@ -21,6 +21,7 @@ from ..errors import ValidationError
 from ..refit.result import InstrumentedFit
 from ..validate.result import CrossValidation
 from .base import Diagnostic, DiagnosticContext, Finding, Severity, worst
+from .circles import CircleGridBias
 from .coverage import ImageCoverage, TargetScale
 from .generalisation import OutOfSampleError
 from .geometry import DepthVariation, FrontoparallelDominance, PoseDiversity
@@ -39,6 +40,7 @@ DIAGNOSTICS: Tuple[type, ...] = (
     TargetScale,
     DistortionModelAdequacy,
     NoiseModelValidity,
+    CircleGridBias,
     OutlierViews,
 )
 
@@ -75,8 +77,19 @@ class Diagnosis:
 
     @property
     def passing(self) -> Tuple[Finding, ...]:
-        """Diagnostics that found nothing wrong."""
-        return tuple(f for f in self.findings if f.severity is Severity.OK)
+        """Diagnostics that found nothing wrong.
+
+        A check that does not apply to this capture is left out rather than
+        listed as clean. The report prints these as "clean: ..." and a reader
+        takes that as "looked at, and fine"; a circle-grid check on a
+        checkerboard was never looked at, and saying otherwise is a small lie
+        that costs nothing to avoid. A diagnostic opts out by reporting
+        `applies=False`.
+        """
+        return tuple(
+            f for f in self.findings
+            if f.severity is Severity.OK and f.metrics.get("applies", True)
+        )
 
     def ranked(self) -> Tuple[Finding, ...]:
         """Findings worst first, keeping report order within a severity."""

@@ -37,6 +37,8 @@ from calibsense.errors import ValidationError
         ("circles:4x11:20mm", CircleGrid(4, 11, 20.0, True)),
         ("circles:4x11:20mm:symmetric", CircleGrid(4, 11, 20.0, False)),
         ("circle_grid:4x11:20mm:asymmetric", CircleGrid(4, 11, 20.0, True)),
+        ("circles:4x11:20mm:asymmetric:6mm", CircleGrid(4, 11, 20.0, True, diameter=6.0)),
+        ("circles:4x11:20mm:symmetric:6mm", CircleGrid(4, 11, 20.0, False, diameter=6.0)),
         ("charuco:8x11:20mm:15mm", CharucoBoard(8, 11, 20.0, 15.0)),
         ("charuco:8x11:20mm:15mm:DICT_4X4_50", CharucoBoard(8, 11, 20.0, 15.0, "DICT_4X4_50")),
         ("charuco:8x11:20mm:15mm:DICT_4X4_50:legacy",
@@ -52,6 +54,18 @@ def test_lengths_may_carry_a_unit():
     target = parse_shorthand("checkerboard:9x6:1in")
     assert target.units == "in"
     assert target.object_points()[1, 0] == pytest.approx(25.4)
+
+
+def test_a_circle_diameter_may_be_given_in_another_unit():
+    """Stated in the user's unit, carried in the spacing's, so the spec has one."""
+    target = parse_shorthand("circles:4x11:2cm:asymmetric:6mm")
+    assert target.units == "cm"
+    assert target.diameter == pytest.approx(0.6)
+
+
+def test_a_circle_diameter_larger_than_the_spacing_is_refused():
+    with pytest.raises(ValidationError, match="would touch"):
+        parse_shorthand("circles:4x11:20mm:asymmetric:25mm")
 
 
 def test_charuco_converts_a_marker_size_given_in_another_unit():
@@ -74,7 +88,7 @@ def test_whitespace_is_tolerated():
         ("checkerboard:9x6:abc", "not a length"),
         ("checkerboard:9x6:25parsec", "unknown length unit"),
         ("circles:4x11:20mm:diagonal", "symmetric"),
-        ("circles:4x11", "takes 2 or 3 fields"),
+        ("circles:4x11", "takes 2 to 4 fields"),
         ("charuco:8x11:20mm", "at least 3 fields"),
         ("charuco:8x11:20mm:25mm", "marker_size"),
         ("charuco:8x11:20mm:15mm:DICT_4X4_50:DICT_5X5_50", "dictionaries"),

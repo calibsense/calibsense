@@ -442,12 +442,22 @@ def test_the_centroid_bias_is_small_at_a_normal_working_distance():
     assert near > 0.1
 
 
-def test_the_circle_grid_spec_cannot_evaluate_the_bias():
-    """It records the spacing and not the diameter, which is what the bias needs.
+def test_the_circle_grid_spec_can_carry_what_the_bias_needs():
+    """The diameter is optional and unrecorded by default.
 
-    Pinned because this is the gap that has to close before the bias can be
-    warned about, let alone corrected.
+    Nothing needs it to detect or to calibrate, and only judging the result
+    needs it, so requiring it would make every existing circle-grid session
+    invalid to state a caveat. Absent, `CircleGridBias` says it cannot check
+    rather than staying silent — silence would read as the problem being absent
+    rather than the input.
     """
-    grid = CircleGrid(4, 11, 20.0, True)
-    assert hasattr(grid, "spacing")
-    assert not any("diameter" in f or "radius" in f for f in vars(grid))
+    stated = CircleGrid(4, 11, 20.0, True, diameter=6.0)
+    assert stated.diameter == 6.0
+    assert "6 mm circles" in stated.describe()
+
+    unstated = CircleGrid(4, 11, 20.0, True)
+    assert unstated.diameter == 0.0
+    assert "circles" not in unstated.describe().split("spacing")[-1]
+
+    with pytest.raises(ValidationError, match="would touch"):
+        CircleGrid(4, 11, 20.0, True, diameter=25.0)

@@ -16,7 +16,7 @@ the common case where opening an editor to write four lines is friction:
 
     checkerboard:9x6:25mm
     charuco:8x11:20mm:15mm:DICT_5X5_1000
-    circles:4x11:20mm:asymmetric
+    circles:4x11:20mm:asymmetric:6mm
 
 Units may be attached to any length, and default to millimetres.
 """
@@ -51,7 +51,7 @@ ALIASES = {
 SHORTHAND_HELP = (
     "checkerboard:COLSxROWS:SQUARE  |  "
     "charuco:SQXxSQY:SQUARE:MARKER[:DICT][:legacy]  |  "
-    "circles:COLSxROWS:SPACING[:symmetric|asymmetric]  "
+    "circles:COLSxROWS:SPACING[:symmetric|asymmetric][:DIAMETER]  "
     "(lengths may carry a unit, e.g. 25mm, 2.5cm, 1in; default mm)"
 )
 
@@ -103,19 +103,30 @@ def parse_shorthand(text: str) -> TargetSpec:
         square, unit = _length(parts[2], "square size")
         return Checkerboard(columns, rows, square, units=unit)
     if kind == "circle_grid":
-        if len(parts) not in (3, 4):
+        if len(parts) not in (3, 4, 5):
             raise ValidationError(
-                f"circles shorthand takes 2 or 3 fields, got {len(parts) - 1}: "
-                "circles:COLSxROWS:SPACING[:symmetric|asymmetric]"
+                f"circles shorthand takes 2 to 4 fields, got {len(parts) - 1}: "
+                "circles:COLSxROWS:SPACING[:symmetric|asymmetric][:DIAMETER]"
             )
         columns, rows = _grid(parts[1], "circle grid")
         spacing, unit = _length(parts[2], "spacing")
-        layout = parts[3].strip().lower() if len(parts) == 4 else "asymmetric"
+        layout = parts[3].strip().lower() if len(parts) >= 4 else "asymmetric"
         if layout not in ("symmetric", "asymmetric"):
             raise ValidationError(
                 f"circle layout must be 'symmetric' or 'asymmetric', got {layout!r}"
             )
-        return CircleGrid(columns, rows, spacing, layout == "asymmetric", units=unit)
+        diameter = 0.0
+        if len(parts) == 5:
+            diameter, diameter_unit = _length(parts[4], "diameter")
+            # Stated in whatever unit the user wrote, carried in the
+            # spacing's unit so the spec holds one unit throughout.
+            diameter = units_mod.from_mm(
+                units_mod.to_mm(diameter, diameter_unit), unit
+            )
+        return CircleGrid(
+            columns, rows, spacing, layout == "asymmetric",
+            diameter=diameter, units=unit,
+        )
 
     if len(parts) < 4:
         raise ValidationError(

@@ -215,12 +215,20 @@ class CircleGrid(TargetSpec):
             pattern this is the vertical row pitch, and OpenCV's convention puts
             successive rows offset by one `spacing` horizontally.
         asymmetric: Whether the staggered asymmetric layout is used.
+        diameter: Printed diameter of one circle, in `units`. Zero, the default,
+            means unrecorded — nothing needs it to detect or to calibrate, and
+            one thing needs it to *judge* the result. A projected circle's
+            centroid is not the projection of its centre, and the gap goes as
+            `0.49 · f · (r / d)²`, so it is governed by how large the circles
+            look. Without the diameter that cannot be evaluated, which is why
+            `CircleGridBias` stays silent rather than guessing.
     """
 
     columns: int = 4
     rows: int = 11
     spacing: float = 20.0
     asymmetric: bool = True
+    diameter: float = 0.0
     units: str = units_mod.CANONICAL
 
     kind: ClassVar[str] = "circle_grid"
@@ -230,6 +238,15 @@ class CircleGrid(TargetSpec):
         object.__setattr__(self, "columns", _grid_dimension(self.columns, "columns"))
         object.__setattr__(self, "rows", _grid_dimension(self.rows, "rows"))
         object.__setattr__(self, "spacing", _positive_length(self.spacing, "spacing"))
+        diameter = float(self.diameter)
+        if diameter < 0 or not np.isfinite(diameter):
+            raise ValidationError(f"diameter must be non-negative, got {diameter}")
+        if diameter >= self.spacing:
+            raise ValidationError(
+                f"diameter ({diameter}) must be smaller than the centre-to-centre "
+                f"spacing ({self.spacing}); circles that large would touch"
+            )
+        object.__setattr__(self, "diameter", diameter)
         object.__setattr__(self, "asymmetric", bool(self.asymmetric))
 
     @property
@@ -256,6 +273,7 @@ class CircleGrid(TargetSpec):
         return (
             f"{self.columns}x{self.rows} {layout} circle grid, "
             f"{self.spacing:g} {self.units} spacing"
+            + (f", {self.diameter:g} {self.units} circles" if self.diameter else "")
         )
 
     def _fields(self) -> Dict[str, Any]:
@@ -264,6 +282,7 @@ class CircleGrid(TargetSpec):
             "rows": self.rows,
             "spacing": self.spacing,
             "asymmetric": self.asymmetric,
+            "diameter": self.diameter,
         }
 
 

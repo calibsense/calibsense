@@ -595,3 +595,75 @@ def test_a_critical_coverage_finding_predicts_a_wrong_periphery():
     ]
     assert critical and milder, by_severity
     assert np.median(critical) > 10.0 * np.median(milder)
+
+
+# --------------------------------------------------------------------------
+# the circle grid's centroid bias, once the diameter is known
+# --------------------------------------------------------------------------
+
+def _circle_context(diameter, distances, spacing=20.0):
+    from calibsense.core.session import CalibrationSession
+    from calibsense.core.target import CircleGrid
+    from calibsense.diagnose.base import DiagnosticContext
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.synthetic import diverse_poses, synthesise
+
+    grid = CircleGrid(4, 11, spacing, True, diameter=diameter)
+    capture = synthesise(
+        rigs.WIDE_PINHOLE, grid,
+        diverse_poses(grid, 14, distances_mm=distances, seed=3),
+        rigs.IMAGE_SIZE, noise_px=0.2, seed=5,
+    )
+    fit = instrument(
+        CalibrationSession(observations=capture.observations), RefitOptions()
+    )
+    return DiagnosticContext(fit, capture.observations)
+
+
+@pytest.mark.slow
+def test_the_centroid_bias_is_negligible_far_away_and_material_close():
+    """The distinction that decides whether a circle-grid user needs to care.
+
+    The bias goes as the square of the angular radius, so distance and circle
+    size dominate it and tilt barely moves it. A check that fired on every
+    circle grid would be useless.
+    """
+    from calibsense.diagnose.circles import CircleGridBias
+
+    far = CircleGridBias().run(_circle_context(6.0, (700.0, 900.0, 1200.0)))
+    close = CircleGridBias().run(_circle_context(6.0, (250.0, 350.0, 450.0)))
+    big = CircleGridBias().run(_circle_context(14.0, (250.0, 350.0, 450.0)))
+
+    assert far.severity is Severity.OK
+    assert big.severity is Severity.WARNING
+    assert far.metrics["bias_px"] < close.metrics["bias_px"] < big.metrics["bias_px"]
+    # Quadratic in the radius: 14/6 squared is about 5.4.
+    ratio = big.metrics["bias_px"] / close.metrics["bias_px"]
+    assert ratio == pytest.approx((14.0 / 6.0) ** 2, rel=0.05)
+
+
+@pytest.mark.slow
+def test_a_circle_grid_without_a_diameter_says_it_cannot_check():
+    """Silence would read as absence of the problem rather than of the input."""
+    from calibsense.diagnose.circles import CircleGridBias
+
+    finding = CircleGridBias().run(_circle_context(0.0, (400.0, 800.0, 1200.0)))
+    assert finding.severity is Severity.NOTE
+    assert finding.metrics["measured"] is False
+    assert "diameter" in finding.summary
+    assert "circles:" in finding.action
+
+
+def test_the_circle_check_does_not_claim_to_pass_on_a_checkerboard():
+    """An inapplicable check listed as clean reads as "looked at, and fine"."""
+    from calibsense.diagnose import diagnose
+    from calibsense.diagnose.circles import CircleGridBias
+
+    context = rigs.healthy()
+    finding = CircleGridBias().run(context)
+    assert finding.severity is Severity.OK
+    assert finding.metrics["applies"] is False
+
+    diagnosis = diagnose(context.fit, context.observations)
+    assert finding.cause not in [f.cause for f in diagnosis.passing]
+    assert finding.cause in [f.cause for f in diagnosis.findings]
