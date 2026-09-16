@@ -457,6 +457,7 @@ def run_audit(
                 hand_eye,
                 list(session.robot.aligned_with(observations)),
                 list(fit.poses),
+                fit.board_centre_mm,
             )
         except CalibSenseError:
             hand_eye = None

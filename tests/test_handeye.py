@@ -264,7 +264,10 @@ def test_a_bad_covariance_shape_is_rejected():
 
 def diagnose_of(session, fit, result):
     return diagnose_hand_eye(
-        result, list(session.robot.aligned_with(session.observations)), list(fit.poses)
+        result,
+        list(session.robot.aligned_with(session.observations)),
+        list(fit.poses),
+        fit.board_centre_mm,
     )
 
 
@@ -283,7 +286,7 @@ def test_a_healthy_pose_set_has_no_findings():
     session, fit, result = solved(monte_carlo=True)
     diagnosis = diagnose_of(session, fit, result)
     assert not diagnosis.critical and not diagnosis.warnings
-    assert len(diagnosis.findings) == 6
+    assert len(diagnosis.findings) == 7
     assert [f.cause for f in diagnosis.findings if f.severity is not Severity.OK] == [
         "hand_eye_board_scale"
     ]
@@ -586,3 +589,124 @@ def test_the_board_finding_stops_warning_once_the_tolerance_is_stated():
     assert stated.severity is Severity.OK
     assert stated.metrics["propagated"] is True
     assert stated.metrics["board_scale_sigma"] == pytest.approx(0.001)
+
+
+# --------------------------------------------------------------------------
+# the checkerboard's half-turn ambiguity
+# --------------------------------------------------------------------------
+
+def _with_flipped_views(session, which):
+    """Relabel the named views as if the board had been read a half turn round."""
+    from calibsense.core.observations import ObservationSet, ViewObservations
+    from calibsense.core.session import CalibrationSession
+
+    observations = session.observations
+    views = []
+    for index, view in enumerate(observations.views):
+        if index in which:
+            views.append(ViewObservations(
+                view.view_id, view.point_ids, view.image_points[::-1].copy()
+            ))
+        else:
+            views.append(view)
+    return CalibrationSession(
+        observations=ObservationSet(
+            observations.target, observations.image_size, tuple(views)
+        ),
+        robot=session.robot,
+    )
+
+
+def _flip_finding(session):
+    from calibsense.handeye.diagnose import diagnose_hand_eye
+    from calibsense.refit import RefitOptions, instrument
+
+    fit = instrument(session, RefitOptions())
+    result = solve_hand_eye(
+        fit, session, mounting="eye_in_hand", monte_carlo=False
+    )
+    diagnosis = diagnose_hand_eye(
+        result,
+        list(session.robot.aligned_with(session.observations)),
+        list(fit.poses),
+        fit.board_centre_mm,
+    )
+    finding = next(
+        f for f in diagnosis.findings if f.cause == "hand_eye_board_flip"
+    )
+    return fit, result, finding
+
+
+@pytest.mark.slow
+def test_a_half_turn_is_invisible_to_the_calibration_and_ruins_the_hand_eye():
+    """Why this needs a check of its own rather than an existing one.
+
+    A checkerboard's inner corners map onto themselves under a half turn, so the
+    detector can label the same board from either end. Each view's pose absorbs
+    it, which makes the reprojection error identical to the last bit — and the
+    relative motions between views, which is what hand-eye solves from, wrong.
+    """
+    session = rigs.hand_eye_session("eye_in_hand")
+    clean_fit, clean, _ = _flip_finding(session)
+    bad_fit, bad, _ = _flip_finding(_with_flipped_views(session, {3}))
+
+    # Nothing in the calibration moves.
+    assert bad_fit.rms == pytest.approx(clean_fit.rms, rel=1e-6)
+    # The hand-eye moves a great deal.
+    moved = np.linalg.norm(
+        np.asarray(bad.camera.translation) - np.asarray(clean.camera.translation)
+    )
+    assert moved > 25.0
+
+
+@pytest.mark.slow
+def test_a_flipped_view_is_named_and_the_verdict_comes_from_a_re_solve():
+    session = rigs.hand_eye_session("eye_in_hand")
+    _, _, finding = _flip_finding(_with_flipped_views(session, {3}))
+
+    assert finding.severity is Severity.CRITICAL
+    assert finding.metrics["n_flipped"] == 1
+    assert finding.metrics["flipped_views"]
+    # Confirmed by correcting and re-solving, not by the threshold alone.
+    assert (
+        finding.metrics["residual_after_deg"] * 3.0
+        < finding.metrics["residual_before_deg"]
+    )
+    assert "ChArUco" in finding.action
+
+
+@pytest.mark.slow
+def test_a_clean_pose_set_is_not_accused_of_flipping():
+    session = rigs.hand_eye_session("eye_in_hand")
+    _, _, finding = _flip_finding(session)
+    assert finding.severity is Severity.OK
+    assert finding.metrics["n_flipped"] == 0
+    assert finding.metrics["worst_residual_deg"] < 90.0
+
+
+def test_the_flip_check_says_so_when_it_has_no_pivot():
+    """Turning about the origin corner instead would be 236 mm wrong."""
+    from calibsense.handeye.diagnose import diagnose_hand_eye
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    result = solve_hand_eye(fit, session, mounting="eye_in_hand", monte_carlo=False)
+    diagnosis = diagnose_hand_eye(
+        result, list(session.robot.aligned_with(session.observations)), list(fit.poses)
+    )
+    finding = next(f for f in diagnosis.findings if f.cause == "hand_eye_board_flip")
+    assert finding.severity is Severity.NOTE
+    assert "pattern centre" in finding.summary
+
+
+def test_the_half_turn_pivots_on_the_pattern_centre():
+    """About the origin corner it would also translate by the board diagonal."""
+    from calibsense.handeye.diagnose import _half_turn_about
+
+    centre = np.array([100.0, 62.5, 0.0])
+    turn = _half_turn_about(centre)
+    assert np.allclose(turn.apply(centre.reshape(1, 3))[0], centre)
+    # A point on one side maps to the matching point on the other.
+    corner = np.zeros((1, 3))
+    assert np.allclose(turn.apply(corner)[0], 2.0 * centre)

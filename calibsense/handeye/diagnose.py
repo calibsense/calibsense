@@ -64,15 +64,30 @@ class HandEyeContext:
         result: The solved hand-eye transform.
         robot_axes: Rotation vectors of the relative robot motions.
         camera_axes: Rotation vectors of the matching relative camera motions.
+        robots: Flange-to-base poses, kept so the flip check can re-solve.
+        boards: Target-in-camera poses, likewise.
+        board_centre_mm: Centre of the point pattern in board coordinates. A
+            corner-ordering flip is a half turn about *this*, not about the
+            board frame's origin — turning about the origin leaves the board
+            diagonal in the translation, 236 mm on a 9x6 board of 25 mm
+            squares. Zeros mean the centre was not supplied and the flip check
+            is skipped rather than run against the wrong pivot.
     """
 
     result: HandEyeResult
     robot_axes: np.ndarray
     camera_axes: np.ndarray
+    robots: Tuple[Pose, ...] = ()
+    boards: Tuple[Pose, ...] = ()
+    board_centre_mm: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     @classmethod
     def build(
-        cls, result: HandEyeResult, robots: Sequence[Pose], boards: Sequence[Pose]
+        cls,
+        result: HandEyeResult,
+        robots: Sequence[Pose],
+        boards: Sequence[Pose],
+        board_centre_mm: Sequence[float] = (0.0, 0.0, 0.0),
     ) -> "HandEyeContext":
         """Derive the relative motions the diagnostics need.
 
@@ -80,6 +95,8 @@ class HandEyeContext:
             result: The solved hand-eye transform.
             robots: Flange-to-base poses, one per view.
             boards: Target-in-camera poses, one per view.
+            board_centre_mm: Centre of the point pattern in board coordinates,
+                for the corner-ordering flip check.
 
         Returns:
             A ready context.
@@ -87,7 +104,11 @@ class HandEyeContext:
         robot_axes, camera_axes, _, _ = relative_motions(
             robots, boards, result.mounting
         )
-        return cls(result, robot_axes, camera_axes)
+        return cls(
+            result, robot_axes, camera_axes,
+            tuple(robots), tuple(boards),
+            tuple(float(v) for v in board_centre_mm),
+        )
 
     @property
     def angles_deg(self) -> np.ndarray:
@@ -223,6 +244,136 @@ def conditioning(context: HandEyeContext) -> Finding:
         )
     return _finding(
         "hand_eye_conditioning", "Hand-eye conditioning", Severity.OK, shared,
+        **metrics,
+    )
+
+
+#: Rotational residual, in degrees, above which a view is tested for a flip.
+#: A flipped view's residual is dominated by the half turn itself and measures
+#: near 180; noise and a merely poor view cannot reach 90, so anything past that
+#: is worth the cost of testing. The test is what decides, not this.
+FLIP_SUSPECT_DEGREES = 90.0
+
+#: How much the rotational residual has to fall before a flip is reported as
+#: found rather than suspected. Correcting a genuine flip took a 16-view solve
+#: from 13 degrees median to 1.7; a factor of three is far inside that and well
+#: outside anything a coincidence produces.
+FLIP_CONFIRMED_RATIO = 3.0
+
+
+def _half_turn_about(centre: Sequence[float]) -> Pose:
+    """The board-frame transform a reversed corner ordering amounts to.
+
+    A checkerboard's inner-corner grid maps onto itself under a half turn, so a
+    detector can label the same board from either end. The two labellings differ
+    by a rotation of pi about the pattern's *centre* — about the origin corner
+    it would also translate by the board diagonal, and composing that instead
+    leaves 236 mm of error on a 9x6 board of 25 mm squares.
+    """
+    rotation = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
+    pivot = np.asarray(centre, dtype=float)
+    return Pose(rotation, pivot - rotation @ pivot)
+
+
+def board_flip(context: HandEyeContext) -> Finding:
+    """Did the detector read some boards a half turn round from the others?
+
+    Harmless for the intrinsics — each view's pose absorbs the flip, and the
+    reprojection error is bit-for-bit identical — which is exactly why nothing
+    else in the report can see it. Hand-eye uses the board-to-camera motions
+    *between* views, so a flip on some views and not others corrupts the
+    relative motions the solve is built from. Measured on a 16-view session,
+    flipping one view moved the transform by 60 mm and 10 degrees while the fit
+    RMS did not move at all.
+
+    Suspicion comes from the rotational residual and the verdict comes from a
+    re-solve: the suspects are corrected, the solve is repeated, and a flip is
+    reported only if the residual actually collapses. A threshold alone would
+    confuse this with any other reason a view sits badly.
+    """
+    result = context.result
+    centre = np.asarray(context.board_centre_mm, dtype=float)
+    metrics = dict(flipped_views=[], n_flipped=0)
+    if not context.boards or not np.any(centre):
+        return _finding(
+            "hand_eye_board_flip", "Board corner ordering", Severity.NOTE,
+            "the corner-ordering check needs the target's pattern centre, which "
+            "this solve was not given",
+            **metrics,
+        )
+
+    residuals = np.degrees(np.linalg.norm(result.residuals[:, :3], axis=1))
+    suspects = [int(i) for i in np.flatnonzero(residuals > FLIP_SUSPECT_DEGREES)]
+    if not suspects:
+        return _finding(
+            "hand_eye_board_flip", "Board corner ordering", Severity.OK,
+            f"no view's board pose sits a half turn from the rest; the worst "
+            f"rotational residual is {residuals.max():.2f} deg",
+            worst_residual_deg=float(residuals.max()), **metrics,
+        )
+
+    from .solve import _residuals, _solve_transforms
+
+    corrected = list(context.boards)
+    turn = _half_turn_about(centre)
+    for index in suspects:
+        corrected[index] = corrected[index].compose(turn)
+    try:
+        camera, target, _ = _solve_transforms(
+            result.mounting, list(context.robots), corrected
+        )
+    except (ValidationError, np.linalg.LinAlgError):
+        camera = None
+    if camera is None:
+        return _finding(
+            "hand_eye_board_flip", "Board corner ordering", Severity.WARNING,
+            f"{len(suspects)} view(s) sit more than {FLIP_SUSPECT_DEGREES:.0f} "
+            "deg from the rest, which is the signature of a corner-ordering "
+            "flip, but the corrected solve did not converge",
+            **metrics,
+        )
+
+    after = np.degrees(np.linalg.norm(
+        _residuals(result.mounting, camera, target, list(context.robots), corrected)[:, :3],
+        axis=1,
+    ))
+    shift = float(np.linalg.norm(
+        np.asarray(camera.translation) - np.asarray(result.camera.translation)
+    ))
+    ids = [result.view_ids[i] for i in suspects if i < len(result.view_ids)]
+    metrics = dict(
+        flipped_views=ids,
+        n_flipped=len(suspects),
+        residual_before_deg=float(np.median(residuals)),
+        residual_after_deg=float(np.median(after)),
+        translation_shift_mm=shift,
+        worst_residual_deg=float(residuals.max()),
+    )
+    if np.median(after) * FLIP_CONFIRMED_RATIO >= np.median(residuals):
+        return _finding(
+            "hand_eye_board_flip", "Board corner ordering", Severity.WARNING,
+            f"{len(suspects)} view(s) sit more than {FLIP_SUSPECT_DEGREES:.0f} "
+            f"deg from the rest, but turning them round did not settle the "
+            f"solve ({np.median(residuals):.2f} to {np.median(after):.2f} deg "
+            "median), so this is a bad pose rather than a flipped one",
+            "Check those views for a misdetection or a robot pose paired with "
+            "the wrong image.",
+            **metrics,
+        )
+    return _finding(
+        "hand_eye_board_flip", "Board corner ordering", Severity.CRITICAL,
+        f"{', '.join(ids)} was read a half turn round from the rest: correcting "
+        f"it takes the median rotational residual from {np.median(residuals):.2f} "
+        f"to {np.median(after):.2f} deg and moves the camera transform by "
+        f"{shift:.1f} mm",
+        "A checkerboard's inner corners map onto themselves under a half turn, "
+        "so the detector can label the same board from either end and nothing "
+        "in the reprojection error will show it — the fit is bit-for-bit "
+        "identical either way. Only hand-eye notices, because it uses the "
+        "motions between views. Re-run against a ChArUco target, whose markers "
+        "make the orientation unambiguous, or drop the named views. Do not "
+        "quote the transform above: it was solved from a pose set containing "
+        "this fault.",
         **metrics,
     )
 
@@ -410,13 +561,17 @@ HAND_EYE_DIAGNOSTICS = (
     rotation_axis_spread,
     rotation_magnitude,
     conditioning,
+    board_flip,
     covariance_basis,
     board_scale,
 )
 
 
 def diagnose_hand_eye(
-    result: HandEyeResult, robots: Sequence[Pose], boards: Sequence[Pose]
+    result: HandEyeResult,
+    robots: Sequence[Pose],
+    boards: Sequence[Pose],
+    board_centre_mm: Sequence[float] = (0.0, 0.0, 0.0),
 ) -> Diagnosis:
     """Run every hand-eye sufficiency check.
 
@@ -424,6 +579,8 @@ def diagnose_hand_eye(
         result: The solved hand-eye transform.
         robots: Flange-to-base poses, one per view.
         boards: Target-in-camera poses, one per view.
+        board_centre_mm: Centre of the point pattern in board coordinates, which
+            the corner-ordering flip check needs as its pivot.
 
     Returns:
         The findings, in report order.
@@ -435,5 +592,5 @@ def diagnose_hand_eye(
         raise ValidationError(
             f"{len(robots)} robot poses against {len(boards)} camera poses"
         )
-    context = HandEyeContext.build(result, robots, boards)
+    context = HandEyeContext.build(result, robots, boards, board_centre_mm)
     return Diagnosis(tuple(check(context) for check in HAND_EYE_DIAGNOSTICS))
