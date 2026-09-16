@@ -23,6 +23,7 @@ because each view's pose is free and absorbs the flip.
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -299,3 +300,72 @@ def test_refine_corners_shrinks_its_window_near_an_edge():
     inside = np.array([[[19.0, 19.0]]], dtype=np.float32)
     refined = refine_corners(gray, inside, 5)
     assert refined.shape == inside.shape
+
+
+# --------------------------------------------------------------------------
+# the ChArUco legacy marker layout
+# --------------------------------------------------------------------------
+
+def _charuco_image(squares_x, squares_y, legacy, pixels=100, margin=40):
+    """A rendered ChArUco board under one of the two marker layouts."""
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
+    board = cv2.aruco.CharucoBoard((squares_x, squares_y), 20.0, 15.0, dictionary)
+    board.setLegacyPattern(legacy)
+    return board.generateImage(
+        (squares_x * pixels, squares_y * pixels), marginSize=margin
+    )
+
+
+@pytest.mark.parametrize("squares_y", [3, 5, 7, 9, 11])
+def test_the_legacy_layout_is_a_no_op_when_the_y_count_is_odd(squares_y):
+    """Including the 8x11 default, where the flag cannot cause anything.
+
+    open-items treated this as a live hazard on every board. The two layouts
+    are the same image unless the square count in y is even.
+    """
+    modern = _charuco_image(8, squares_y, False)
+    legacy = _charuco_image(8, squares_y, True)
+    assert np.array_equal(modern, legacy)
+
+
+@pytest.mark.parametrize("squares_y", [4, 6, 8, 10])
+def test_the_legacy_layout_differs_when_the_y_count_is_even(squares_y):
+    modern = _charuco_image(8, squares_y, False)
+    legacy = _charuco_image(8, squares_y, True)
+    assert not np.array_equal(modern, legacy)
+
+
+def test_the_wrong_legacy_setting_fails_detection_rather_than_calibrating_wrongly():
+    """open-items had this backwards, and the difference matters.
+
+    It recorded that a wrong setting produces a confident, wrong calibration
+    rather than a detection failure. It produces the failure: the ArUco markers
+    are read either way and no chessboard corners come back at all, so every
+    image is rejected and nothing reaches the fit.
+    """
+    image = _charuco_image(8, 10, legacy=False)
+    wrong = CharucoDetector(
+        CharucoBoard(8, 10, 20.0, 15.0, "DICT_5X5_1000", legacy_pattern=True)
+    )
+    with pytest.raises(DetectionError) as raised:
+        wrong.detect(image, "v0")
+    message = str(raised.value)
+    assert "ArUco markers were read" in message
+    assert "legacy_pattern" in message
+
+    right = CharucoDetector(
+        CharucoBoard(8, 10, 20.0, 15.0, "DICT_5X5_1000", legacy_pattern=False)
+    )
+    assert right.detect(image, "v0").n_points > 40
+
+
+def test_the_legacy_hint_is_withheld_where_the_flag_cannot_be_the_cause():
+    """On an odd y count the layouts agree, so blaming the flag misdirects."""
+    detector = CharucoDetector(
+        CharucoBoard(8, 11, 20.0, 15.0, "DICT_5X5_1000", legacy_pattern=True)
+    )
+    reason = detector._no_corners_reason(40)
+    assert "ArUco markers were read" in reason
+    assert "legacy_pattern" not in reason
+
+    assert "no ArUco markers either" in detector._no_corners_reason(0)

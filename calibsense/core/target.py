@@ -284,8 +284,16 @@ class CharucoBoard(TargetSpec):
             `square_size`.
         dictionary: Name of the ArUco dictionary, such as `"DICT_5X5_1000"`.
         legacy_pattern: Use OpenCV's pre-4.6 marker layout. Boards printed from
-            an older OpenCV need this set, and a wrong choice produces a
-            confident, wrong calibration rather than a detection failure.
+            an older OpenCV need this set.
+
+            This used to say a wrong choice produces a confident, wrong
+            calibration rather than a detection failure. Measured, it does
+            neither of those things quietly. The two layouts are **identical**
+            unless `squares_y` is even — the 8x11 default included, where the
+            flag is a no-op — and where they do differ the wrong setting returns
+            the ArUco markers and *no* chessboard corners at all, so every image
+            fails to detect rather than calibrating wrongly. The detector says
+            so when it sees that signature.
     """
 
     squares_x: int = 8

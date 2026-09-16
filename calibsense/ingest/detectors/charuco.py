@@ -56,6 +56,42 @@ class CharucoDetector(TargetDetector):
         self.board = board
         self._detector = cv2.aruco.CharucoDetector(board)
 
+    def _no_corners_reason(self, markers_found: int) -> str:
+        """Why no chessboard corners came back, when that can be narrowed down.
+
+        Markers read but no corners is the exact signature of the wrong
+        `legacy_pattern`: OpenCV finds the ArUco squares either way and then
+        fails to pair them with chessboard corners, because the two layouts
+        place the markers differently. Measured on an 8x10 board, the wrong
+        setting returns 40 markers and 0 corners where the right one returns 40
+        and 63.
+
+        Worth saying only when the flag can matter at all. The two layouts are
+        **identical** whenever the board has an odd number of squares in y —
+        including the 8x11 default — so on those boards this cannot be the
+        cause and pointing at it would send the reader somewhere useless.
+
+        Args:
+            markers_found: ArUco markers the detector did resolve.
+
+        Returns:
+            The reason text, without the view id.
+        """
+        if markers_found == 0:
+            return "no ChArUco corners resolved, and no ArUco markers either"
+        if self.target.squares_y % 2 == 1:
+            return (
+                f"{markers_found} ArUco markers were read but no chessboard "
+                "corners resolved"
+            )
+        return (
+            f"{markers_found} ArUco markers were read but no chessboard corners "
+            f"resolved, which is what the wrong legacy_pattern looks like: this "
+            f"board is {self.target.squares_x}x{self.target.squares_y} and the "
+            "two marker layouts differ whenever the square count in y is even. "
+            f"Try legacy_pattern={not self.target.legacy_pattern}"
+        )
+
     def detect(
         self, image: np.ndarray, view_id: str, source: Optional[str] = None
     ) -> ViewObservations:
@@ -75,7 +111,8 @@ class CharucoDetector(TargetDetector):
         gray = to_gray(image)
         corners, ids, _, marker_ids = self._detector.detectBoard(gray)
         if corners is None or ids is None or len(ids) == 0:
-            raise DetectionError(f"{view_id}: no ChArUco corners resolved")
+            found = 0 if marker_ids is None else int(len(marker_ids))
+            raise DetectionError(f"{view_id}: {self._no_corners_reason(found)}")
         points = np.asarray(corners, dtype=np.float64).reshape(-1, 2)
         point_ids = np.asarray(ids, dtype=np.int64).reshape(-1)
         self._check_enough(points.shape[0], view_id)
