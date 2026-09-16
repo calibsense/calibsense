@@ -98,6 +98,11 @@ class Forecast:
         forecast_identifiable: Whether the extended capture would.
         n_views_before: Views in the current capture.
         n_views_after: Views after the addition.
+        trustworthy: Whether the prediction can be quoted. `False` when the
+            forecast came back *wider* than today's interval, which adding views
+            cannot do to a well-posed problem and which therefore says the
+            synthetic views were projected through a model that does not hold
+            where they land. See `forecast`.
     """
 
     recommendation: Recommendation
@@ -108,6 +113,7 @@ class Forecast:
     forecast_identifiable: bool
     n_views_before: int
     n_views_after: int
+    trustworthy: bool = True
 
     @property
     def improvement(self) -> float:
@@ -119,11 +125,22 @@ class Forecast:
     @property
     def worthwhile(self) -> bool:
         """Whether the change buys either identifiability or a real narrowing."""
+        if not self.trustworthy:
+            return False
         gained = self.forecast_identifiable and not self.currently_identifiable
         return gained or self.improvement > 1.2
 
     def statement(self, unit: str = "mm") -> str:
         """The forecast sentence for the report."""
+        if not self.trustworthy:
+            return (
+                f"{self.recommendation.description} is still the right change, "
+                "but this report cannot predict what it would buy: the "
+                "synthetic views land where the current capture has no data, "
+                "and the distortion model is extrapolating there, so the "
+                "forecast came back wider than today's interval rather than "
+                "narrower"
+            )
         if not self.currently_identifiable and self.forecast_identifiable:
             return (
                 f"{self.recommendation.description} would make the calibration "
@@ -142,6 +159,7 @@ class Forecast:
         return {
             "recommendation": self.recommendation.to_dict(),
             "quantity": self.quantity,
+            "trustworthy": self.trustworthy,
             "current_half_width": self.current_half_width,
             "forecast_half_width": self.forecast_half_width,
             "improvement": self.improvement,
@@ -217,6 +235,13 @@ def recommend(
             lateral_mm=0.45 * median,
         )
     return None
+
+
+#: How much wider than today's interval a forecast may come back before it is
+#: refused. Adding views cannot widen a well-posed problem, so anything above
+#: one is already a contradiction; the margin only absorbs Monte Carlo noise
+#: between two propagations of a few hundred samples each.
+FORECAST_WIDENING_TOLERANCE = 1.1
 
 
 def extend(
@@ -314,13 +339,29 @@ def forecast(
     )
     extended_fit = instrument(extended_session, fit.options)
     predicted = propagate(extended_fit, task, n_samples, seed=seed)
+    current_half_width = current.distribution(name).half_width()
+    forecast_half_width = predicted.distribution(name).half_width()
+    # Adding views to a well-posed problem cannot widen its interval, so a
+    # forecast that comes back wider is not a prediction about the capture, it
+    # is a symptom of the projection that produced it. The synthetic views are
+    # cast through the *fitted* camera, and a coverage recommendation sends them
+    # exactly where the current capture has no data — on a centre-only capture
+    # the fitted and true models disagree by 540 mm at the frame edge against
+    # 6 mm in the middle, so the new points land nowhere near where they would
+    # really fall and the refit on them is meaningless. Measured: the forecast
+    # read 82.7 mm where actually capturing those views gives 0.86.
+    trustworthy = bool(
+        forecast_half_width <= current_half_width * FORECAST_WIDENING_TOLERANCE
+        or (extended_fit.conditioning.identifiable and not fit.conditioning.identifiable)
+    )
     return Forecast(
         recommendation=recommendation,
         quantity=name,
-        current_half_width=current.distribution(name).half_width(),
-        forecast_half_width=predicted.distribution(name).half_width(),
+        current_half_width=current_half_width,
+        forecast_half_width=forecast_half_width,
         currently_identifiable=fit.conditioning.identifiable,
         forecast_identifiable=extended_fit.conditioning.identifiable,
         n_views_before=session.observations.n_views,
         n_views_after=extended.n_views,
+        trustworthy=trustworthy,
     )

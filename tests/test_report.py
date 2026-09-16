@@ -666,3 +666,90 @@ def test_an_unambiguous_prior_says_nothing():
     session = CalibrationSession(observations=capture.observations, prior=prior)
     assert not prior.model_ambiguous
     assert "undecidable" not in "\n".join(session.summary_lines())
+
+
+# --------------------------------------------------------------------------
+# is the forecast a prediction anyone should act on?
+# --------------------------------------------------------------------------
+
+def _forecast_for(poses, seed=5, samples=600):
+    """Today's interval, the forecast, and what those views actually give.
+
+    The forecast casts its synthetic views through the *fitted* camera. The test
+    of that is to cast the same geometry through the truth camera instead, refit
+    and propagate, which is what the user would get by going and capturing them.
+    """
+    import dataclasses
+
+    from calibsense.diagnose import diagnose
+    from calibsense.diagnose.base import DiagnosticContext
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.report.forecast import extend, forecast, recommend
+    from calibsense.task import LengthAtDepth, propagate
+
+    task = LengthAtDepth(800.0, 100.0)
+    capture = rigs.synthesise(
+        rigs.WIDE_PINHOLE, rigs.BOARD, poses, rigs.IMAGE_SIZE, noise_px=0.25, seed=seed
+    )
+    session = CalibrationSession(observations=capture.observations)
+    fit = instrument(session, RefitOptions())
+    current = propagate(fit, task, samples, seed=0)
+    context = DiagnosticContext(fit, capture.observations)
+    recommendation = recommend(
+        diagnose(fit, capture.observations), context.board_distances_mm
+    )
+    assert recommendation is not None
+    predicted = forecast(
+        session, fit, task, current, recommendation, n_samples=samples, seed=0
+    )
+
+    honest = extend(
+        session, dataclasses.replace(fit, camera=rigs.WIDE_PINHOLE),
+        recommendation, seed=0,
+    )
+    actual = propagate(
+        instrument(CalibrationSession(observations=honest), RefitOptions()),
+        task, samples, seed=0,
+    )
+    return predicted, actual.distribution("length_mm").half_width()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("label,poses", [
+    ("frontoparallel", rigs.poses(tilt_degrees=(0.2, 1.5), distances_mm=(800.0,))),
+    ("single depth", rigs.poses(distances_mm=(700.0,))),
+    ("healthy", rigs.poses()),
+])
+def test_the_forecast_matches_what_capturing_those_views_really_gives(label, poses):
+    """The one claim in the report that is a prediction rather than a measurement.
+
+    Checked by generating the recommended views through the truth camera rather
+    than the fitted one, which is what a user would actually capture, and
+    comparing against what was promised.
+    """
+    predicted, actual = _forecast_for(poses)
+    assert predicted.trustworthy, label
+    assert predicted.forecast_half_width == pytest.approx(actual, rel=0.15), label
+
+
+@pytest.mark.slow
+def test_a_coverage_forecast_refuses_rather_than_predicting_through_a_bad_model():
+    """The case where the forecast's own method defeats it.
+
+    The synthetic views go through the fitted camera, and a coverage
+    recommendation sends them exactly where the capture has no data. On a
+    centre-only capture the fitted distortion is extrapolating there — the
+    fitted and true models disagree by 540 mm at the frame edge against 6 mm in
+    the middle — so the new points land nowhere near where they really would.
+    The forecast came back at 82.7 mm where capturing those views actually gives
+    0.86, which is a self-contradiction because adding views cannot widen a
+    well-posed interval.
+    """
+    predicted, actual = _forecast_for(rigs.poses(lateral_mm=15.0))
+
+    assert not predicted.trustworthy
+    assert not predicted.worthwhile
+    assert predicted.forecast_half_width > 10.0 * actual
+    # The recommendation survives; only the number is withheld.
+    assert "still the right change" in predicted.statement()
+    assert "cannot predict" in predicted.statement()
