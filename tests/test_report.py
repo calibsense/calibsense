@@ -267,18 +267,24 @@ def test_a_healthy_audit_calls_its_reprojection_error_honest(good_audit):
 
 @pytest.mark.slow
 def test_correlated_noise_makes_the_whole_audit_untrustworthy(correlated_audit):
-    """`trustworthy` has to cover every way the figures become a bound.
+    """`trustworthy` has to cover every way the figures stop being plain answers.
 
-    A reader who branches on this flag would otherwise ship a calibration whose
-    intervals the report itself says are several times too tight, because the
-    flag used to mean identifiability alone and this capture is identifiable.
+    The intervals are no longer too tight — the propagation widens them — but a
+    reader who branches on this flag still needs to know that the widening came
+    from the scatter between views rather than from a noise model, and that
+    widening an interval does not improve the calibration inside it.
+
+    The banner names no cause on purpose. The check behind it compares two
+    covariances, which says the model and the data disagree without saying which
+    part of the model is wrong; correlated noise is one candidate and a
+    constraint the camera does not satisfy is another.
     """
     assert correlated_audit.fit.conditioning.identifiable
     assert not correlated_audit.trustworthy
     caveats = correlated_audit.caveats()
     assert len(caveats) == 1
-    assert "corner noise is correlated" in caveats[0]
-    assert "too tight" in caveats[0]
+    assert "does not describe this capture" in caveats[0]
+    assert "widened" in caveats[0]
 
 
 @pytest.mark.slow
@@ -289,8 +295,8 @@ def test_the_caveats_reach_the_json_and_both_renderers(correlated_audit):
     assert payload["trustworthy"] is False
     assert payload["caveats"] == list(correlated_audit.caveats())
 
-    assert "CORNER NOISE IS CORRELATED" in render_text(correlated_audit)
-    assert b"CORNER NOISE IS CORRELATED" in pdf_streams(render_pdf(correlated_audit))[0]
+    assert "DOES NOT DESCRIBE THIS CAPTURE" in render_text(correlated_audit)
+    assert b"DOES NOT DESCRIBE THIS CAPTURE" in pdf_streams(render_pdf(correlated_audit))[0]
 
 
 @pytest.mark.slow
@@ -523,3 +529,68 @@ def test_the_text_report_covers_the_same_ground(good_audit):
 def test_the_text_report_warns_first_when_untrustworthy(degenerate_audit):
     text = render_text(degenerate_audit)
     assert text.index("DOES NOT DETERMINE") < text.index("findings")
+
+
+# --------------------------------------------------------------------------
+# what the outlier views are costing
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def outlier_audit():
+    """A capture with one view given eight times the noise of the rest."""
+    capture = rigs.with_bad_view(scale=8.0)
+    session = CalibrationSession(observations=capture.observations)
+    return run_audit(session, n_samples=300, forecast_samples=200)
+
+
+@pytest.mark.slow
+def test_the_outlier_finding_is_quantified_rather_than_only_named(outlier_audit):
+    """Naming a bad view without saying what it costs is not actionable.
+
+    Excluding a view needs no robust loss and no custom optimiser, so this is
+    available while the down-weighting half of the same problem waits on a
+    native solver.
+    """
+    cost = outlier_audit.outlier_cost()
+    assert cost is not None
+    assert cost["dropped"]
+    assert cost["n_views_after"] == cost["n_views_before"] - len(cost["dropped"])
+    assert cost["sigma_after_px"] < cost["sigma_before_px"]
+    assert cost["fx_std_after"] < cost["fx_std_before"]
+
+
+@pytest.mark.slow
+def test_a_bad_view_moves_the_estimate_and_not_only_the_interval(outlier_audit):
+    """The half of this that open-items did not mention.
+
+    A bad view inflates sigma so every interval widens, which is what the item
+    said. It also drags the point estimate, which it did not, and that is the
+    part a reader cannot see from the residuals.
+    """
+    cost = outlier_audit.outlier_cost()
+    assert abs(cost["fx_shift"]) > 0.3 * cost["fx_std_after"]
+
+
+@pytest.mark.slow
+def test_the_comparison_is_offered_and_not_adopted(outlier_audit):
+    """The reported calibration must still be the one over every view."""
+    assert outlier_audit.without_outliers is not None
+    assert outlier_audit.fit.n_views > outlier_audit.without_outliers.n_views
+    assert outlier_audit.fit.camera.fx != outlier_audit.without_outliers.camera.fx
+
+
+@pytest.mark.slow
+def test_a_clean_capture_has_nothing_to_exclude(good_audit):
+    assert good_audit.outlier_cost() is None
+    assert "outlier views are costing" not in render_text(good_audit)
+
+
+@pytest.mark.slow
+def test_the_outlier_cost_reaches_both_renderers(outlier_audit):
+    import json
+
+    assert "outlier views are costing" in render_text(outlier_audit)
+    # Headings are set upper case, and this one can land on the second page.
+    assert b"OUTLIER VIEWS ARE COSTING" in pdf_text(render_pdf(outlier_audit))
+    payload = json.loads(render_json(outlier_audit))
+    assert payload["without_outliers"]["dropped"]

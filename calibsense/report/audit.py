@@ -32,7 +32,7 @@ from ..diagnose.base import DiagnosticContext, Severity
 from ..diagnose.report import Diagnosis, diagnose
 from ..errors import CalibSenseError, ValidationError
 from ..refit.result import InstrumentedFit, RefitOptions
-from ..refit.engine import instrument
+from ..refit.engine import instrument, refit_without
 from ..task.base import Task, TaskResult
 from ..task.propagate import DEFAULT_SAMPLES, propagate
 from ..task.tasks import LengthAtDepth
@@ -108,6 +108,11 @@ class Audit:
         prediction: What more views would buy, when there is something to fix.
         hand_eye: The solved hand-eye transform, when robot poses were supplied.
         hand_eye_diagnosis: Pose-set sufficiency for that solve.
+        without_outliers: The same capture refit with the flagged views removed,
+            when any were flagged and enough remain. `None` otherwise. Reported
+            rather than adopted: which views to trust is the user's call, and a
+            threshold that silently drops data is how a calibration gets quietly
+            overfitted.
     """
 
     metadata: ReportMetadata
@@ -119,6 +124,7 @@ class Audit:
     prediction: Optional[Forecast] = None
     hand_eye: Optional[Any] = None
     hand_eye_diagnosis: Optional[Diagnosis] = None
+    without_outliers: Optional[InstrumentedFit] = None
 
     @property
     def headline_task(self) -> Optional[TaskResult]:
@@ -147,15 +153,26 @@ class Audit:
         return not self.caveats()
 
     def caveats(self) -> Tuple[str, ...]:
-        """Why every figure in this report is a bound rather than an answer.
+        """Why the figures in this report cannot simply be read at face value.
 
-        Two conditions qualify, and they fail in the same direction for
-        different reasons. An unidentifiable calibration leaves a parameter
-        direction with no variance at all, so every interval derived from it is
-        narrower than the truth. Correlated corner noise leaves the covariance
-        itself measurably too tight, which the noise model finding quantifies.
-        Both mean the same thing to a reader — the figures understate — so both
-        belong in the banner the report opens with.
+        Two conditions qualify, and they are no longer the same condition. An
+        unidentifiable calibration leaves a parameter direction with no variance
+        at all, so every interval derived from it is narrower than the truth and
+        nothing in the pipeline can repair that.
+
+        A failed noise-model check used to belong in the same sentence. It no
+        longer does: the task-space propagation now samples from the
+        view-clustered covariance wherever that is wider, so the millimetres are
+        widened rather than merely annotated. What survives is a different
+        warning — the interval is now resting on the scatter between views
+        rather than on a noise model, the point estimate is not improved by
+        widening the interval around it, and an error shared by every view stays
+        invisible to a between-view estimate either way.
+
+        The banner deliberately does not name a cause. The check that raised it
+        compares two covariances, which detects that the model and the data
+        disagree without saying which part of the model is wrong; the finding
+        itself lists the candidates in the order they are worth ruling out.
 
         Returns:
             One sentence per condition, worst first, or an empty tuple when
@@ -176,12 +193,34 @@ class Audit:
             if finding.severity < Severity.CRITICAL:
                 continue
             factor = finding.metrics.get("worst_inflation")
-            scale = f" by about {factor:.1f}x" if factor else ""
+            scale = f" up to {factor:.1f}x" if factor else ""
             reasons.append(
-                "The corner noise is correlated - every figure below is too "
-                f"tight{scale}"
+                "The model does not describe this capture - the intervals "
+                f"below are widened{scale}"
             )
         return tuple(reasons)
+
+    def outlier_cost(self) -> Optional[Dict[str, Any]]:
+        """What the flagged views cost, by comparison against a fit without them.
+
+        Returns:
+            The two fits' residual scale, focal-length deviation and view count,
+            or `None` when nothing was flagged or too few views would remain.
+        """
+        if self.without_outliers is None:
+            return None
+        before, after = self.fit, self.without_outliers
+        dropped = [view.view_id for view in before.residuals.outlier_views()]
+        return {
+            "dropped": dropped,
+            "n_views_before": before.n_views,
+            "n_views_after": after.n_views,
+            "sigma_before_px": float(before.covariance.sigma),
+            "sigma_after_px": float(after.covariance.sigma),
+            "fx_std_before": float(before.covariance.intrinsic_std()[0]),
+            "fx_std_after": float(after.covariance.intrinsic_std()[0]),
+            "fx_shift": float(after.camera.fx - before.camera.fx),
+        }
 
     def dominant_cause(self) -> Optional[Any]:
         """The worst finding that names a cause rather than a symptom.
@@ -257,6 +296,7 @@ class Audit:
             "hand_eye_diagnosis": (
                 self.hand_eye_diagnosis.to_dict() if self.hand_eye_diagnosis else None
             ),
+            "without_outliers": self.outlier_cost(),
         }
 
 
@@ -294,6 +334,8 @@ def run_audit(
     seed: Optional[int] = 0,
     forecast_samples: int = 800,
     observation_noise_px: Optional[float] = None,
+    widen: bool = True,
+    board_scale_sigma: float = 0.0,
 ) -> Audit:
     """Run the whole audit: refit, cross-validate, diagnose, propagate, forecast.
 
@@ -315,6 +357,19 @@ def run_audit(
             `NoiseFloor.sigma_for_propagation()` from `calibsense noise-floor` to
             use a directly measured figure instead of one that assumes the
             model is right.
+        widen: Propagate from the view-clustered covariance wherever it is wider
+            than the classical one. On by default, because a capture whose
+            corner noise is correlated, or whose model is wrong in some other
+            way, otherwise reports millimetres that are several times too
+            tight. `False` propagates the classical covariance
+            exactly as the residual noise model asserts it, which is the right
+            choice only when you have independent reason to believe that model —
+            a measured noise floor, say — and need the figure not to carry the
+            correction's deliberate conservatism.
+        board_scale_sigma: Relative uncertainty in the target's pitch, folded
+            into the hand-eye covariance. Zero treats the board as exact, which
+            is what every calibration tool does and what the board-scale finding
+            exists to put a number on.
 
     Returns:
         The audit.
@@ -336,6 +391,18 @@ def run_audit(
         validation = None
 
     diagnosis = diagnose(fit, observations, validation)
+
+    # What the flagged views are costing, which the outlier finding names but
+    # cannot quantify. Excluding a view needs no robust loss, so this is
+    # available today; it is a comparison offered to the reader, not a fit the
+    # report adopts.
+    without_outliers: Optional[InstrumentedFit] = None
+    flagged = [view.view_id for view in fit.residuals.outlier_views()]
+    if flagged:
+        try:
+            without_outliers = refit_without(session, flagged, options)
+        except CalibSenseError:
+            without_outliers = None
     chosen = tuple(tasks) if tasks else default_tasks(fit, observations)
     results = tuple(
         propagate(
@@ -344,6 +411,7 @@ def run_audit(
             n_samples,
             observation_noise_px=observation_noise_px,
             seed=None if seed is None else seed + 101 * index,
+            widen=widen,
         )
         for index, task in enumerate(chosen)
     )
@@ -367,7 +435,10 @@ def run_audit(
         from ..handeye import diagnose_hand_eye, solve_hand_eye
 
         try:
-            hand_eye = solve_hand_eye(fit, session, mounting, seed=seed)
+            hand_eye = solve_hand_eye(
+                fit, session, mounting, seed=seed,
+                board_scale_sigma=board_scale_sigma,
+            )
             hand_eye_diagnosis = diagnose_hand_eye(
                 hand_eye,
                 list(session.robot.aligned_with(observations)),
@@ -387,4 +458,5 @@ def run_audit(
         prediction=prediction,
         hand_eye=hand_eye,
         hand_eye_diagnosis=hand_eye_diagnosis,
+        without_outliers=without_outliers,
     )

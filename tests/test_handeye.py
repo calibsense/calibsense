@@ -268,11 +268,25 @@ def diagnose_of(session, fit, result):
     )
 
 
+@pytest.mark.slow
 def test_a_healthy_pose_set_has_no_findings():
-    session, fit, result = solved()
+    """Nothing the pose set can be blamed for, which is not the same as nothing.
+
+    The board-scale note is always present and is deliberately not a warning:
+    it reports a systematic the tool cannot see rather than a defect in the
+    capture, and no rearrangement of the poses would remove it.
+
+    Resampled rather than residual, unlike most of this file, because the
+    residual covariance now raises a warning of its own and every other test
+    here takes the cheap path for speed.
+    """
+    session, fit, result = solved(monte_carlo=True)
     diagnosis = diagnose_of(session, fit, result)
     assert not diagnosis.critical and not diagnosis.warnings
-    assert len(diagnosis.findings) == 4
+    assert len(diagnosis.findings) == 6
+    assert [f.cause for f in diagnosis.findings if f.severity is not Severity.OK] == [
+        "hand_eye_board_scale"
+    ]
 
 
 def test_rotation_about_one_axis_is_caught():
@@ -330,3 +344,245 @@ def test_diagnose_rejects_mismatched_pose_lists():
     session, fit, result = solved()
     with pytest.raises(ValidationError, match="robot poses against"):
         diagnose_hand_eye(result, [], list(fit.poses))
+
+
+# --------------------------------------------------------------------------
+# board scale: the error nothing else in the package can see
+# --------------------------------------------------------------------------
+
+def _mislabelled(session, relative_error):
+    """The same detections, told the board is a different size than it is."""
+    from calibsense.core.observations import ObservationSet
+    from calibsense.core.session import CalibrationSession
+    from calibsense.core.target import Checkerboard
+
+    observations = session.observations
+    target = observations.target
+    nominal = Checkerboard(
+        target.columns, target.rows, target.square_size / (1.0 + relative_error)
+    )
+    return CalibrationSession(
+        observations=ObservationSet(
+            nominal, observations.image_size, observations.views
+        ),
+        robot=session.robot,
+    )
+
+
+@pytest.mark.slow
+def test_a_board_scale_error_leaves_the_focal_length_and_the_residual_alone():
+    """The reason this needs its own finding: nothing else can detect it.
+
+    Scaling the board and scaling every translation by the same factor produces
+    identical images, so the fit absorbs a board scale error entirely into the
+    poses. The focal length does not move and the residual does not move, which
+    means neither the reprojection error, the cross-validation ratio nor the
+    noise-model check can see it.
+    """
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    clean = instrument(_mislabelled(session, 0.0), RefitOptions())
+    scaled = instrument(_mislabelled(session, 0.01), RefitOptions())
+
+    assert scaled.camera.fx == pytest.approx(clean.camera.fx, rel=1e-4)
+    assert scaled.rms == pytest.approx(clean.rms, rel=1e-6)
+    # It went into the distances instead, at very nearly the full board error.
+    ratio = scaled.working_distances_mm().mean() / clean.working_distances_mm().mean()
+    assert ratio == pytest.approx(1.0 / 1.01, rel=2e-3)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("mounting", ["eye_in_hand", "eye_to_hand"])
+def test_the_board_scale_sensitivity_predicts_the_real_shift(mounting):
+    """The reported sensitivity has to be the actual displacement, not an omen.
+
+    It is measured with a 0.1% probe, so a test that re-derives it at 0.5% also
+    checks the response is linear over the range a printed target can be out by.
+    """
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session(mounting)
+    clean_session = _mislabelled(session, 0.0)
+    clean_fit = instrument(clean_session, RefitOptions())
+    clean = solve_hand_eye(
+        clean_fit, clean_session, mounting=mounting, monte_carlo=False
+    )
+
+    error = 0.005
+    bad_session = _mislabelled(session, error)
+    bad_fit = instrument(bad_session, RefitOptions())
+    bad = solve_hand_eye(bad_fit, bad_session, mounting=mounting, monte_carlo=False)
+
+    actual = float(np.linalg.norm(
+        np.asarray(bad.camera.translation) - np.asarray(clean.camera.translation)
+    ))
+    predicted = clean.board_scale_sensitivity_mm * error
+    assert predicted == pytest.approx(actual, rel=0.05)
+    # And it is the amplification that makes this worth reporting at all.
+    magnitude = np.linalg.norm(np.asarray(clean.camera.translation))
+    assert clean.board_scale_sensitivity_mm > 3.0 * magnitude
+
+
+@pytest.mark.slow
+def test_the_board_finding_says_when_the_board_beats_the_random_error():
+    from calibsense.handeye.diagnose import diagnose_hand_eye
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    result = solve_hand_eye(fit, session, mounting="eye_in_hand", monte_carlo=False)
+    robots = list(session.robot.aligned_with(session.observations))
+    diagnosis = diagnose_hand_eye(result, robots, list(fit.poses))
+
+    finding = next(f for f in diagnosis.findings if f.cause == "hand_eye_board_scale")
+    # A note, not a warning: the ratio grows as the capture improves, so
+    # grading on it would make a better calibration complain louder.
+    assert finding.severity is Severity.NOTE
+    assert finding.metrics["dominant"] is True
+    assert finding.metrics["ratio"] > 1.0
+    assert finding.metrics["implied_translation_error_mm"] > (
+        finding.metrics["reported_translation_sd_mm"]
+    )
+    assert "certificate" in finding.action
+
+
+def test_a_sensitivity_that_cannot_be_measured_is_reported_as_absent():
+    """Returning zero silently would read as "the board costs nothing"."""
+    import dataclasses
+
+    from calibsense.handeye.diagnose import board_scale, HandEyeContext
+
+    session, fit, result = solved()
+    robots = list(session.robot.aligned_with(session.observations))
+    context = HandEyeContext.build(
+        dataclasses.replace(result, board_scale_sensitivity_mm=0.0),
+        robots, list(fit.poses),
+    )
+    finding = board_scale(context)
+    assert finding.severity is Severity.NOTE
+    assert "could not be measured" in finding.summary
+    assert finding.metrics["board_scale_sensitivity_mm"] == 0.0
+
+
+def test_a_perturbed_solve_that_will_not_converge_gives_no_sensitivity(monkeypatch):
+    """The probe is an extra solve, and an extra solve can fail."""
+    from calibsense.errors import ValidationError
+    from calibsense.handeye import solve as solve_module
+
+    session, fit, result = solved()
+    robots = list(session.robot.aligned_with(session.observations))
+
+    def refuse(*args, **kwargs):
+        raise ValidationError("no")
+
+    monkeypatch.setattr(solve_module, "_solve_transforms", refuse)
+    assert solve_module.board_scale_sensitivity(
+        "eye_in_hand", robots, list(fit.poses), result.camera
+    ) == 0.0
+
+
+def test_a_residual_only_covariance_is_a_warning_not_a_footnote():
+    """Labelling it in prose stopped being enough once the split depended on it.
+
+    The residual covariance understates the translation error threefold, which
+    on its own is a loose number rather than a wrong one. But the variance split
+    asks which of the camera and the hand-eye to spend on, and the share the
+    residual form hides is exactly the share being measured, so it answers "the
+    camera, entirely" whatever the truth is.
+    """
+    from calibsense.handeye.diagnose import diagnose_hand_eye
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    robots = list(session.robot.aligned_with(session.observations))
+
+    cheap = solve_hand_eye(fit, session, mounting="eye_in_hand", monte_carlo=False)
+    finding = next(
+        f for f in diagnose_hand_eye(cheap, robots, list(fit.poses)).findings
+        if f.cause == "hand_eye_covariance_basis"
+    )
+    assert finding.severity is Severity.WARNING
+    assert finding.metrics["covariance_method"] == "residual"
+    assert "variance split" in finding.action
+
+    honest = solve_hand_eye(
+        fit, session, mounting="eye_in_hand", monte_carlo=True, n_samples=60
+    )
+    clean = next(
+        f for f in diagnose_hand_eye(honest, robots, list(fit.poses)).findings
+        if f.cause == "hand_eye_covariance_basis"
+    )
+    assert clean.severity is Severity.OK
+    assert clean.metrics["optimism_factor"] > 1.5
+
+
+@pytest.mark.parametrize("mounting", ["eye_in_hand", "eye_to_hand"])
+def test_a_stated_board_tolerance_widens_the_covariance(mounting):
+    """The systematic goes into the interval instead of beside it.
+
+    A board scale error is a single number, so its contribution is rank one and
+    has a closed form: sigma^2 J J'. Resampling it would cost hundreds of solves
+    and add Monte Carlo noise to a term that does not need any.
+    """
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session(mounting)
+    fit = instrument(session, RefitOptions())
+
+    def translation_sd(sigma):
+        result = solve_hand_eye(
+            fit, session, mounting=mounting, monte_carlo=False,
+            board_scale_sigma=sigma,
+        )
+        return np.linalg.norm(
+            np.sqrt(np.diag(np.asarray(result.camera_covariance, float))[3:6])
+        ), result
+
+    exact, plain = translation_sd(0.0)
+    stated, widened = translation_sd(0.001)
+
+    assert plain.board_scale_sigma == 0.0
+    assert widened.board_scale_sigma == pytest.approx(0.001)
+    # How much it adds depends on how large the random error already was, which
+    # differs by a factor of two between the mountings, so what is asserted is
+    # that it adds rather than how much.
+    assert stated > 1.2 * exact
+
+    # Rank one, so doubling the tolerance doubles that term's contribution and
+    # the total grows as the quadrature sum rather than linearly.
+    doubled, _ = translation_sd(0.002)
+    added_once = stated ** 2 - exact ** 2
+    added_twice = doubled ** 2 - exact ** 2
+    assert added_twice == pytest.approx(4.0 * added_once, rel=0.02)
+
+
+def test_the_board_finding_stops_warning_once_the_tolerance_is_stated():
+    """The note exists to get a number out of the reader; it should then stop."""
+    from calibsense.handeye.diagnose import diagnose_hand_eye
+    from calibsense.refit import RefitOptions, instrument
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    robots = list(session.robot.aligned_with(session.observations))
+
+    def finding_for(sigma):
+        result = solve_hand_eye(
+            fit, session, mounting="eye_in_hand", monte_carlo=False,
+            board_scale_sigma=sigma,
+        )
+        return next(
+            f for f in diagnose_hand_eye(result, robots, list(fit.poses)).findings
+            if f.cause == "hand_eye_board_scale"
+        )
+
+    silent = finding_for(0.0)
+    assert silent.severity is Severity.NOTE
+    assert silent.metrics["propagated"] is False
+    assert "--board-tolerance" in silent.action
+
+    stated = finding_for(0.001)
+    assert stated.severity is Severity.OK
+    assert stated.metrics["propagated"] is True
+    assert stated.metrics["board_scale_sigma"] == pytest.approx(0.001)

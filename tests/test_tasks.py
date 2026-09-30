@@ -401,3 +401,345 @@ def test_camera_to_base_says_the_flange_pose_is_exact():
     task = CameraToBase(hand_eye_result=result, depth_mm=800.0)
     assert task.to_dict()["flange_is_exact"] is True
     assert "exact" in task.describe()
+
+
+# --------------------------------------------------------------------------
+# does the widened covariance actually cover, in millimetres?
+# --------------------------------------------------------------------------
+
+def _measure_with(camera, task, pixels):
+    """Measure fixed pixels with one calibration, the way a user's rig would."""
+    from calibsense.task.sampling import ParameterSample
+
+    return float(task.measure(ParameterSample(camera=camera), pixels)[0])
+
+
+@pytest.mark.slow
+def test_the_widened_interval_covers_in_task_space_and_the_classical_one_does_not():
+    """The claim item 1b would not make without this measurement.
+
+    The finding named a factor and told the reader to apply it by hand, which
+    left the product's headline number — the millimetres — carrying an
+    understatement the report had just described. This checks the fix where it
+    matters, in task units rather than in pixels.
+
+    Empirical: hold the pixels a truth camera produces, refit the same capture
+    many times under a correlated noise field, and measure those fixed pixels
+    with each fit. The spread of that measurement is the real task-space error
+    of a calibration from this capture. Predicted: propagate one such fit, with
+    the widening off and on.
+
+    Measured over 150 refits: the classical propagation lands at about 0.12 of
+    the empirical spread and the widened one at about 1.14, so the assertions
+    below sit either side of a gap of nearly ten. The widened figure sits just
+    above one rather than just below because the view-clustered estimate carries
+    a leverage correction that errs wide; see `leave_one_out_steps`.
+    """
+    from calibsense.core.session import CalibrationSession
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.synthetic import diverse_poses, synthesise
+    from calibsense.task.propagate import propagate
+    from calibsense.task.sampling import ParameterSample
+
+    from .test_covariance import reshape_noise
+
+    truth = rigs.WIDE_PINHOLE
+    clean = synthesise(
+        truth, rigs.BOARD, diverse_poses(rigs.BOARD, 14, seed=2), rigs.IMAGE_SIZE,
+        noise_px=0.0, seed=0,
+    ).observations
+    task = LengthAtDepth(800.0, 100.0)
+    pixels = task.observe(ParameterSample(camera=truth))
+
+    def fit_for(observations):
+        return instrument(
+            CalibrationSession(observations=observations), RefitOptions()
+        )
+
+    rng = np.random.default_rng(11)
+    empirical = float(np.std(
+        [
+            _measure_with(fit_for(reshape_noise(clean, rng, "correlated")).camera,
+                          task, pixels)
+            for _ in range(60)
+        ],
+        ddof=1,
+    ))
+
+    fit = fit_for(reshape_noise(clean, np.random.default_rng(9999), "correlated"))
+    # The residual looks *better* than the noise injected, which is why no
+    # residual statistic can catch this and why the classical interval collapses.
+    assert fit.covariance.sigma < 0.15
+
+    def predicted(widen):
+        result = propagate(
+            fit, task, n_samples=1500, observation_noise_px=0.0, widen=widen
+        )
+        return result.distribution("length_mm").std, result.intrinsic_inflation
+
+    classical, unwidened_factor = predicted(False)
+    widened, factor = predicted(True)
+
+    assert unwidened_factor == 1.0
+    assert factor > 3.0
+    assert classical / empirical < 0.3, f"expected a collapsed interval: {classical}"
+    assert 0.7 < widened / empirical < 1.8, f"widened interval off: {widened}"
+    assert widened > 4.0 * classical
+
+
+@pytest.mark.slow
+def test_widening_costs_little_when_the_noise_model_holds():
+    """The control: independent noise must not have its millimetres inflated."""
+    from calibsense.core.session import CalibrationSession
+    from calibsense.refit import RefitOptions, instrument
+    from calibsense.synthetic import diverse_poses, synthesise
+    from calibsense.task.propagate import propagate
+    from calibsense.task.sampling import ParameterSample
+
+    from .test_covariance import reshape_noise
+
+    truth = rigs.WIDE_PINHOLE
+    clean = synthesise(
+        truth, rigs.BOARD, diverse_poses(rigs.BOARD, 14, seed=2), rigs.IMAGE_SIZE,
+        noise_px=0.0, seed=0,
+    ).observations
+    task = LengthAtDepth(800.0, 100.0)
+    pixels = task.observe(ParameterSample(camera=truth))
+
+    def fit_for(observations):
+        return instrument(
+            CalibrationSession(observations=observations), RefitOptions()
+        )
+
+    rng = np.random.default_rng(11)
+    empirical = float(np.std(
+        [
+            _measure_with(fit_for(reshape_noise(clean, rng, "independent")).camera,
+                          task, pixels)
+            for _ in range(60)
+        ],
+        ddof=1,
+    ))
+
+    fit = fit_for(reshape_noise(clean, np.random.default_rng(9999), "independent"))
+    classical = propagate(
+        fit, task, n_samples=1500, observation_noise_px=0.0, widen=False
+    ).distribution("length_mm").std
+    widened = propagate(
+        fit, task, n_samples=1500, observation_noise_px=0.0, widen=True
+    ).distribution("length_mm").std
+
+    assert 0.7 < classical / empirical < 1.4
+    assert 0.8 < widened / empirical < 1.6
+    # A premium, not a doubling: the leverage correction errs wide by about a
+    # fifth even when the noise model is perfectly satisfied, which is the price
+    # of it not erring short by a third when the model fails.
+    assert widened / classical < 1.45
+
+
+# --------------------------------------------------------------------------
+# separating the hand-eye transform from the calibration
+# --------------------------------------------------------------------------
+
+def _base_frame_task(monte_carlo=True, samples=120):
+    from calibsense.handeye import solve_hand_eye
+    from calibsense.refit import RefitOptions
+
+    session = rigs.hand_eye_session("eye_in_hand")
+    fit = instrument(session, RefitOptions())
+    solved = solve_hand_eye(
+        fit, session, mounting="eye_in_hand",
+        monte_carlo=monte_carlo, n_samples=samples,
+    )
+    flange = session.robot.aligned_with(session.observations)[0]
+    return fit, CameraToBase(
+        hand_eye_result=solved, depth_mm=800.0, flange=flange
+    )
+
+
+def test_a_task_without_a_hand_eye_has_nothing_to_separate(good_capture):
+    """The three-way split has to agree with the two-way one where it applies."""
+    from calibsense.core.session import CalibrationSession
+
+    fit = instrument(CalibrationSession(observations=good_capture.observations))
+    result = propagate(fit, LengthAtDepth(800.0, 100.0), 400)
+    assert result.hand_eye_only is None
+    sources = result.variance_sources("length_mm")
+    calibration, noise = result.variance_share("length_mm")
+    assert sources["hand_eye"] == 0.0
+    assert sources["calibration"] == pytest.approx(calibration)
+    assert sources["pixel_noise"] == pytest.approx(noise)
+
+
+@pytest.mark.slow
+def test_the_base_frame_split_says_which_of_the_two_to_spend_on():
+    """The question a robot cell asks that the two-way split could not answer.
+
+    Whether the camera calibration or the hand-eye solve dominates decides where
+    the money goes, and on this rig it is genuinely close — which is the point,
+    because the previous report lumped them together and said only that
+    "calibration and hand-eye" accounted for everything.
+    """
+    fit, task = _base_frame_task()
+    result = propagate(fit, task, 600)
+    assert result.hand_eye_only is not None
+
+    sources = result.variance_sources("position_mm")
+    assert sum(sources.values()) == pytest.approx(1.0)
+    assert sources["hand_eye"] > 0.1, sources
+    assert sources["calibration"] > 0.1, sources
+    assert any("hand-eye" in line for line in result.summary_lines())
+
+
+@pytest.mark.slow
+def test_the_split_is_additive_which_is_what_makes_the_subtraction_valid():
+    """The calibration's share is what is left after the hand-eye's is removed.
+
+    That is only right if the two variances add. They are drawn independently,
+    but the task is non-linear in both, so additivity is an assumption rather
+    than an identity and it is worth measuring. It holds to a few per cent.
+    """
+    from calibsense.task.propagate import _attempt
+    from calibsense.task.sampling import CovarianceSampler, ParameterSample
+
+    fit, task = _base_frame_task()
+    sampler = CovarianceSampler(fit, task.view_indices(), 0, task.hand_eye())
+    nominal = sampler.nominal()
+    observations = task.observe(nominal)
+    n_quantities = len(task.quantities())
+    draws = sampler.draw(1500)
+
+    def spread(builder):
+        values = np.array([
+            _attempt(task, builder(d), observations, n_quantities) for d in draws
+        ])
+        return np.nanvar(values, axis=0, ddof=1)
+
+    both = spread(lambda d: d)
+    camera = spread(lambda d: ParameterSample(d.camera, d.poses, nominal.hand_eye))
+    hand_eye = spread(lambda d: ParameterSample(nominal.camera, nominal.poses, d.hand_eye))
+    assert np.allclose(both, camera + hand_eye, rtol=0.10)
+
+
+@pytest.mark.slow
+def test_an_optimistic_hand_eye_covariance_hides_its_own_share():
+    """Why the split is only meaningful on top of the Monte Carlo covariance.
+
+    The residual-based hand-eye covariance treats the target-in-camera poses as
+    exact and understates itself threefold, which here reads as the hand-eye
+    contributing nothing at all. The honest covariance puts it at half. Anyone
+    reading the split off a residual-based solve would draw the opposite
+    conclusion about where to spend.
+    """
+    fit, optimistic = _base_frame_task(monte_carlo=False)
+    _, honest = _base_frame_task(monte_carlo=True)
+    low = propagate(fit, optimistic, 500).variance_sources("position_mm")
+    high = propagate(fit, honest, 500).variance_sources("position_mm")
+    assert low["hand_eye"] < 0.05
+    assert high["hand_eye"] > 0.2
+
+
+@pytest.mark.slow
+def test_a_stated_robot_repeatability_reaches_the_answer():
+    """The arm's datasheet figure had nowhere to go, and now it has one."""
+    import dataclasses
+
+    fit, task = _base_frame_task()
+    exact = propagate(fit, task, 500)
+    assert task.flange_repeatability() is None
+    assert exact.robot_only is None
+    assert exact.variance_sources("position_mm")["robot"] == 0.0
+
+    stated = dataclasses.replace(task, flange_repeatability_mm=2.0)
+    assert stated.flange_repeatability() == (2.0, 0.0)
+    result = propagate(fit, stated, 500)
+    assert result.robot_only is not None
+
+    sources = result.variance_sources("position_mm")
+    assert sum(sources.values()) == pytest.approx(1.0)
+    assert sources["robot"] > 0.05
+    assert (
+        result.distribution("position_mm").expected_error
+        > exact.distribution("position_mm").expected_error
+    )
+
+
+@pytest.mark.slow
+def test_the_robot_share_grows_with_the_stated_repeatability():
+    """A share that did not respond to the figure would be decoration."""
+    import dataclasses
+
+    fit, task = _base_frame_task()
+    shares = []
+    for millimetres in (1.0, 4.0):
+        stated = dataclasses.replace(task, flange_repeatability_mm=millimetres)
+        shares.append(
+            propagate(fit, stated, 500).variance_sources("position_mm")["robot"]
+        )
+    assert shares[1] > 3.0 * shares[0]
+
+
+def test_an_eye_to_hand_mounting_has_no_flange_to_sample():
+    """The camera does not ride the arm, so its repeatability cannot reach it."""
+    import dataclasses
+
+    fit, task = _base_frame_task(monte_carlo=False)
+    eye_to_hand = dataclasses.replace(
+        task,
+        hand_eye_result=dataclasses.replace(task.hand_eye_result, mounting="eye_to_hand"),
+        flange_repeatability_mm=5.0,
+    )
+    assert eye_to_hand.flange_pose() is None
+    result = propagate(fit, eye_to_hand, 200)
+    assert result.robot_only is None
+    assert result.variance_sources("position_mm")["robot"] == 0.0
+
+
+# --------------------------------------------------------------------------
+# what the widening actually cost this measurement
+# --------------------------------------------------------------------------
+
+def test_the_parameter_space_inflation_overstates_the_task_space_one():
+    """The number the finding prints is not the number the reader wants.
+
+    `intrinsic_inflation` is a maximum over the free intrinsics: it says how far
+    the widest parameter direction moved, not how far this measurement did. A
+    task loads on some directions and not others, so the two differ — and they
+    differ in the direction that makes the finding's figure look worse than the
+    interval actually is.
+    """
+    from calibsense.core.session import CalibrationSession
+
+    context = rigs.with_correlated_noise()
+    result = propagate(
+        context.fit, LengthAtDepth(800.0, 100.0), 800, observation_noise_px=0.0
+    )
+    applied = result.task_space_widening("length_mm")
+    assert result.intrinsic_inflation > 3.0
+    assert applied > 1.5
+    assert applied < result.intrinsic_inflation
+
+
+def test_the_task_space_widening_is_the_ratio_it_claims_to_be():
+    """Checked against propagating the classical covariance separately."""
+    context = rigs.with_correlated_noise()
+    task = LengthAtDepth(800.0, 100.0)
+    widened = propagate(context.fit, task, 800, observation_noise_px=0.0)
+    plain = propagate(
+        context.fit, task, 800, observation_noise_px=0.0, widen=False
+    )
+    expected = (
+        widened.distribution("length_mm", "parameters").std
+        / plain.distribution("length_mm", "parameters").std
+    )
+    assert widened.task_space_widening("length_mm") == pytest.approx(expected, rel=0.05)
+
+
+def test_an_unwidened_run_reports_no_widening():
+    """Nothing to compare against, and one is the honest answer rather than None."""
+    context = rigs.healthy()
+    result = propagate(
+        context.fit, LengthAtDepth(800.0, 100.0), 300, widen=False
+    )
+    assert result.unwidened_parameters is None
+    assert result.task_space_widening("length_mm") == 1.0

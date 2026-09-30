@@ -23,6 +23,7 @@ than silently fitting a different model than the one requested.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -69,6 +70,59 @@ def _term_flags(terms: int) -> int:
 
 _PINHOLE_FIX_NAMES = ("k1", "k2", "k3", "k4", "k5", "k6")
 _FISHEYE_FIX_NAMES = ("k1", "k2", "k3", "k4")
+
+
+#: Fewest views a refit is attempted over. Below this the covariance is not
+#: worth reporting and the excluding-outliers comparison would replace one
+#: unreliable number with another.
+MIN_VIEWS_FOR_REFIT = 4
+
+
+def refit_without(
+    session: CalibrationSession,
+    view_ids: Sequence[str],
+    options: Optional[RefitOptions] = None,
+) -> InstrumentedFit:
+    """Refit the same session with some views removed.
+
+    Excluding a view needs no robust loss and no custom optimiser, which is why
+    this is available while the down-weighting half of the same problem waits on
+    a native solver. What it buys is the comparison: a bad view inflates
+    `sigma^2` so every interval widens, and it also drags the point estimate,
+    and neither cost is visible from the residuals alone.
+
+    Args:
+        session: The session to refit.
+        view_ids: Views to leave out.
+        options: Refit settings, matching the original fit.
+
+    Returns:
+        The fit over the remaining views.
+
+    Raises:
+        ValidationError: Removing those views would leave too few to fit, or a
+            named view is not in the session.
+    """
+    observations = session.observations
+    dropping = set(view_ids)
+    unknown = dropping - set(observations.view_ids)
+    if unknown:
+        raise ValidationError(
+            f"cannot drop {sorted(unknown)}: not in this session"
+        )
+    kept = tuple(v for v in observations.views if v.view_id not in dropping)
+    if len(kept) < MIN_VIEWS_FOR_REFIT:
+        raise ValidationError(
+            f"dropping {len(dropping)} view(s) would leave {len(kept)}, and a "
+            f"refit needs at least {MIN_VIEWS_FOR_REFIT}"
+        )
+    reduced = replace(
+        session,
+        observations=ObservationSet(
+            observations.target, observations.image_size, kept
+        ),
+    )
+    return instrument(reduced, options)
 
 
 def instrument(

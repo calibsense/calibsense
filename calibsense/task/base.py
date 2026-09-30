@@ -78,6 +78,20 @@ class Task(ABC):
         """
         return ()
 
+    def flange_pose(self) -> Optional[Any]:
+        """The robot flange pose at measurement time, for tasks that use one."""
+        return None
+
+    def flange_repeatability(self) -> Optional[Tuple[float, float]]:
+        """The arm's repeatability as `(translation mm, rotation degrees)`.
+
+        `None`, the default, treats the flange as exact. Robot repeatability is
+        a specification of the arm rather than anything calibsense measured, so
+        there is no figure to default to — but a cell integrator has it, and
+        stating it is what gets it into the interval.
+        """
+        return None
+
     def hand_eye(self):
         """The hand-eye result this task needs sampled, or `None`.
 
@@ -255,6 +269,12 @@ class MeasurementDistribution:
         }
 
 
+#: Below this the hand-eye share is reported as negligible rather than as a
+#: percentage, because a figure that rounds to zero invites the reader to
+#: wonder whether it is zero or merely small.
+HAND_EYE_SHARE_FLOOR = 0.01
+
+
 @dataclass(frozen=True)
 class TaskResult:
     """Propagated task-space error, split by where it comes from.
@@ -272,6 +292,17 @@ class TaskResult:
         observation_noise_px: Per-coordinate pixel noise used, in pixels.
         sampler_rank: Rank of the sampled covariance.
         sampler_size: Dimension of the sampled covariance.
+        intrinsic_inflation: How much wider the sampled intrinsic block was than
+            the classical one, because the between-view scatter said the noise
+            model understated it on this capture. One means it did not.
+        hand_eye_only: Samples with only the hand-eye transform varying, for
+            tasks that go through one. `None` for every other task, where there
+            is nothing to separate.
+        robot_only: Samples with only the robot flange varying, when a
+            repeatability was stated. `None` when the arm is taken as exact.
+        unwidened_parameters: Samples drawn from the classical covariance
+            instead of the widened one, for comparison. `None` when no widening
+            was applied, in which case the two would be identical.
     """
 
     task: Task
@@ -283,6 +314,10 @@ class TaskResult:
     observation_noise_px: float
     sampler_rank: int
     sampler_size: int
+    intrinsic_inflation: float = 1.0
+    hand_eye_only: Optional[np.ndarray] = None
+    robot_only: Optional[np.ndarray] = None
+    unwidened_parameters: Optional[np.ndarray] = None
 
     @property
     def n_samples(self) -> int:
@@ -382,6 +417,91 @@ class TaskResult:
             return 0.0, 0.0
         return parameters / total, noise / total
 
+    def variance_sources(self, quantity: str) -> Dict[str, float]:
+        """Where the error comes from, separating hand-eye from the calibration.
+
+        `variance_share` answers "would a better calibration help". For a task
+        that goes through a hand-eye transform that is two questions wearing one
+        coat, because re-calibrating the camera and re-solving the hand-eye are
+        different jobs with different costs. This splits them.
+
+        The camera and the hand-eye transform are drawn independently, so their
+        variances add and the calibration's share is what is left after the
+        hand-eye's is taken out. Monte Carlo noise can make that difference
+        slightly negative when one source dominates completely, so it is clamped
+        at zero rather than reported as a negative share.
+
+        Args:
+            quantity: Name of the quantity.
+
+        Returns:
+            Shares summing to one, keyed `"calibration"`, `"hand_eye"`,
+            `"robot"` and `"pixel_noise"`. A source the task does not carry has
+            a zero share, and with none of them this agrees with
+            `variance_share`.
+        """
+        parameters = self.distribution(quantity, "parameters").std ** 2
+        noise = self.distribution(quantity, "noise").std ** 2
+        empty = {
+            "calibration": 0.0, "hand_eye": 0.0, "robot": 0.0, "pixel_noise": 0.0
+        }
+        total = parameters + noise
+        if total <= 0:
+            return empty
+        index = self._index_of(quantity)
+
+        def variance_of(samples):
+            if samples is None:
+                return 0.0
+            column = samples[:, index]
+            column = column[np.isfinite(column)]
+            return float(np.std(column, ddof=1)) ** 2 if column.size > 1 else 0.0
+
+        hand_eye = variance_of(self.hand_eye_only)
+        robot = variance_of(self.robot_only)
+        # Both are drawn independently of the camera and of each other, so the
+        # calibration's share is what is left. Monte Carlo noise can push that
+        # slightly negative when one source dominates completely.
+        separated = min(hand_eye + robot, parameters)
+        scale = separated / (hand_eye + robot) if hand_eye + robot > 0 else 0.0
+        return {
+            "calibration": max(parameters - separated, 0.0) / total,
+            "hand_eye": hand_eye * scale / total,
+            "robot": robot * scale / total,
+            "pixel_noise": noise / total,
+        }
+
+    def task_space_widening(self, quantity: str) -> float:
+        """How much wider this quantity's spread is for the widening, exactly.
+
+        `intrinsic_inflation` is a maximum over the free intrinsics, so it says
+        how far the widest parameter direction moved and not how far *this*
+        measurement did. The two differ by a lot — a 1.5x in parameter space
+        came out as 1.25x in millimetres on the rig this was measured on —
+        because a task loads on some directions and not others.
+
+        This is the ratio a reader can act on: both spreads measured in the
+        task's own units, from runs sharing the same standard normals so the
+        comparison is not two independent estimates of the same thing.
+
+        Args:
+            quantity: Name of the quantity.
+
+        Returns:
+            The ratio of widened to unwidened spread, or one when no widening
+            was applied.
+        """
+        if self.unwidened_parameters is None:
+            return 1.0
+        index = self._index_of(quantity)
+        plain = self.unwidened_parameters[:, index]
+        plain = plain[np.isfinite(plain)]
+        if plain.size < 2:
+            return 1.0
+        widened = self.distribution(quantity, "parameters").std
+        narrow = float(np.std(plain, ddof=1))
+        return widened / narrow if narrow > 0 else 1.0
+
     def summary_lines(self, level: float = DEFAULT_LEVEL) -> Tuple[str, ...]:
         """A human summary, leading with the task-space statement."""
         lines: List[str] = [self.task.describe(), ""]
@@ -394,6 +514,33 @@ class TaskResult:
                 f"{self.parameter_source_label} and {noise:.0%} from "
                 f"{self.observation_noise_px:.3g} px of pixel noise"
             )
+            sources = self.variance_sources(quantity.name)
+            if self.hand_eye_only is not None:
+                named = [
+                    (label, sources[key])
+                    for key, label in (
+                        ("calibration", "camera calibration"),
+                        ("hand_eye", "hand-eye"),
+                        ("robot", "robot repeatability"),
+                    )
+                    if sources[key] >= HAND_EYE_SHARE_FLOOR
+                ]
+                if len(named) > 1:
+                    lines.append(
+                        f"    that {calibration:.0%} is "
+                        + ", ".join(f"{share:.0%} {label}" for label, share in named)
+                        + ", which says where to spend"
+                    )
+                elif named:
+                    lines.append(f"    essentially all of that is {named[0][0]}")
+            applied = self.task_space_widening(quantity.name)
+            if applied > 1.02:
+                lines.append(
+                    f"    widened {applied:.2f}x in these units, because the "
+                    "scatter between views is broader than the noise model "
+                    f"predicted ({self.intrinsic_inflation:.1f}x on the worst "
+                    "intrinsic, which is a different and larger number)"
+                )
             if abs(distribution.bias) > 0.1 * max(distribution.std, 1e-12):
                 lines.append(
                     f"    the fitted value is offset from the distribution mean by "
@@ -412,6 +559,7 @@ class TaskResult:
             "sampler_rank": self.sampler_rank,
             "sampler_size": self.sampler_size,
             "parameter_source": self.parameter_source_label,
+            "intrinsic_inflation": self.intrinsic_inflation,
             "quantities": [
                 {
                     **self.distribution(q.name).to_dict(level),
@@ -419,6 +567,8 @@ class TaskResult:
                         "calibration": self.variance_share(q.name)[0],
                         "pixel_noise": self.variance_share(q.name)[1],
                     },
+                    "variance_sources": self.variance_sources(q.name),
+                    "task_space_widening": self.task_space_widening(q.name),
                     "parameters_only": self.distribution(q.name, "parameters").to_dict(level),
                     "noise_only": self.distribution(q.name, "noise").to_dict(level),
                 }

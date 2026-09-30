@@ -136,9 +136,10 @@ Four tasks are available as `--task`: `length:DEPTH:SIZE` for measuring a
 feature, `plane:DEPTH[:TILT]` for locating a plane, `stereo:DEPTH:BASELINE` for
 triangulated depth, and `base:DEPTH` for a point in the robot's base frame.
 
-When a figure cannot be trusted the report opens with a banner and the JSON
-carries `"trustworthy": false` with the reason, for example `THE CORNER NOISE IS
-CORRELATED - EVERY FIGURE BELOW IS TOO TIGHT BY ABOUT 3.0X`. Pass
+When a figure cannot be read at face value the report opens with a banner and
+the JSON carries `"trustworthy": false` with the reason, for example `THE MODEL
+DOES NOT DESCRIBE THIS CAPTURE - THE INTERVALS BELOW ARE WIDENED UP TO 3.0X`.
+Pass
 `--deterministic` before the subcommand for reproducible output; without it
 results move in the last few bits, because `cv2.calibrateCamera` reduces across
 threads.
@@ -177,9 +178,49 @@ absorbable by the pose and distortion parameters:
 
 The RMS gets *better* as the answer gets worse, which is why no residual
 statistic can catch it, and why the covariance is also computed a second way
-with the view as the independent unit; their ratio is reported as a finding.
-Feed the measured value back with `--noise-px 0.011` to move the pixel-noise
-half of the task-space error.
+with the view as the independent unit. Where that second estimate is wider, it
+is what the task-space millimetres are sampled from — so the intervals carry the
+inflation rather than a footnote asking you to apply it. Measured against
+repeated refits under a correlated field, the classical propagation lands at
+0.12 of the true spread in millimetres and the widened one at 1.14.
+
+That second estimate is a leave-one-view-out jackknife rather than a plain
+sandwich, because residuals evaluated where the fit put them are smaller than
+the errors that produced them, and the plain version inherits the shrinkage —
+it measured 0.73 of the truth where the corrected one measures 0.95. The
+correction errs wide on purpose, so **a capture whose noise model holds still
+pays something** — measured at 7% to 22% on the task-space figure across view
+counts from ten to forty-five. That is the deliberate trade, and
+[limitations.md](limitations.md) states it rather than burying it.
+`--no-widen` gives the unwidened figure for when you have independent reason to
+trust the noise model. Feed the measured value back with `--noise-px 0.011` to
+move the pixel-noise half.
+
+The same comparison is an information-matrix test, so it fires on *any*
+mismatch between the model and the data, not only on correlated noise. The one
+worth knowing about is a constraint your camera does not satisfy: `--tie-aspect`
+on a camera whose pixels are half a per cent off square raises a CRITICAL on
+otherwise clean data. When the fit was constrained the report names that first,
+because refitting without it is free and rules it out.
+
+## Getting the intrinsics back out
+
+Every command that fits also hands the fit over. `refit`, `diagnose` and
+`report` take `--calibration-out`, which writes the intrinsics with the standard
+deviation of each free parameter beside it:
+
+```sh
+calibsense report session.npz --task length:800mm:100mm \
+    --pdf audit.pdf --calibration-out camera.yml
+```
+
+The extension picks the format — `.json` for calibsense's own, `.xml` or `.yml`
+for OpenCV FileStorage — and `--calibration-out-format ros` writes ROS
+`camera_info` instead. Every format names the distortion model explicitly, so a
+four-coefficient file written by calibsense is never ambiguous between
+Brown-Conrady and Kannala-Brandt the way OpenCV's own sample output is. A
+calibration the capture does not fully determine travels with a warning saying
+its deviations are lower bounds.
 
 ## What it accepts
 
@@ -188,7 +229,8 @@ half of the task-space error.
 | Targets | checkerboard, ChArUco, circle grid (symmetric and asymmetric) |
 | Camera models | pinhole with Brown-Conrady (4, 5, 8, 12 or 14 coefficients), fisheye with Kannala-Brandt |
 | Sources | a folder of images, or an existing calibration plus its detections |
-| Calibration formats | OpenCV FileStorage, ROS `camera_info`, Kalibr camchain, calibsense JSON |
+| Calibration formats in | OpenCV FileStorage, ROS `camera_info`, Kalibr camchain, calibsense JSON |
+| Calibration formats out | OpenCV FileStorage, ROS `camera_info`, calibsense JSON |
 | Robot poses | JSON or CSV; matrix, quaternion or rotation-vector form; either hand-eye direction; any length unit |
 
 Point ids are per view rather than a fixed grid, so a ChArUco board showing half
@@ -253,7 +295,9 @@ Or a piece at a time with `instrument`, `cross_validate`, `diagnose` and
 `propagate` from the top-level package. An `InstrumentedFit` exposes
 `conditioning.identifiable` (read it first), `covariance.intrinsic_std()`, the
 view-clustered `covariance.robust.std()`, the ratio between them as
-`covariance.worst_robust_inflation()`, and
+`covariance.worst_robust_inflation()` (compare it against
+`diagnose.noise.inflation_floor(G)`, not against one — the estimate errs wide by
+design), and
 `covariance.correlation_with_poses("fx")` for `corr(fx, tz)` per view.
 
 `calibsense.synthetic` generates captures with known truth, which is how the
@@ -269,10 +313,20 @@ one camera at a time and the extrinsics between cameras are ignored. The
 uncertainty usually dominates the triangulated depth.
 
 **Board geometry is treated as exact.** A printed target's 50 to 200 µm of print
-scale and flatness error appears nowhere in the covariance, and it is a
-systematic on metric scale: 0.1% of board scale error goes straight into `fx`
-and therefore into millimetres, where it can dominate everything modelled. Order
-a target with a calibration certificate if the millimetres matter.
+scale and flatness error appears nowhere in the covariance, and no check in the
+package can see it: scaling the board rescales every pose by the same factor, so
+the focal length does not move and the reprojection error does not change at
+all. That also means the intrinsics and the `length` and `plane` tasks are
+unaffected by it. **Hand-eye is not.** The robot's poses are in true millimetres
+and the board-derived poses are in board millimetres, so the translation absorbs
+the disagreement at about seven times the board error — at 0.1%, that is 0.7 mm
+against a reported random error of 0.25 mm on the rig in the test suite. The
+hand-eye report measures that sensitivity for your own rig and says what it
+costs. Pass `--board-tolerance 0.001` if you know your target's pitch
+uncertainty and it goes into the covariance rather than beside it; without it
+the board is treated as exact, because a number invented here would be worse
+than a stated assumption. Order a target with a calibration certificate if the
+millimetres matter.
 
 ## Author
 

@@ -48,6 +48,7 @@ def propagate(
     n_samples: int = DEFAULT_SAMPLES,
     observation_noise_px: Optional[float] = None,
     seed: Optional[int] = 0,
+    widen: bool = True,
 ) -> TaskResult:
     """Propagate a calibration's uncertainty into a task's units.
 
@@ -60,6 +61,11 @@ def propagate(
             calibsense actually measured on this camera. Pass `0.0` to isolate the
             calibration's contribution.
         seed: Seed, so a report is reproducible.
+        widen: Widen the intrinsic covariance to the view-clustered estimate
+            wherever that estimate is broader, so a capture whose corner noise
+            is correlated gets an interval that reflects it rather than a
+            footnote saying it should have. Pass `False` to propagate the
+            classical covariance exactly as the noise model asserts it.
 
     Returns:
         The measurement distribution, split by source.
@@ -80,7 +86,11 @@ def propagate(
             f"observation noise must be finite and non-negative, got {noise_px}"
         )
 
-    sampler = CovarianceSampler(fit, task.view_indices(), seed, task.hand_eye())
+    sampler = CovarianceSampler(
+        fit, task.view_indices(), seed, task.hand_eye(), widen=widen,
+        flange=task.flange_pose(),
+        flange_repeatability=task.flange_repeatability(),
+    )
     nominal_sample = sampler.nominal()
     observations = task.observe(nominal_sample)
     nominal = np.asarray(task.measure(nominal_sample, observations), dtype=float)
@@ -92,6 +102,24 @@ def propagate(
         )
 
     draws = sampler.draw(n_samples)
+    # When the covariance was widened, propagate the unwidened one too. The
+    # parameter-space inflation the finding reports is a maximum over the
+    # intrinsics and does not transfer to task units — a 1.5x there came out as
+    # 1.25x in millimetres — so without this the report prints a ratio that
+    # invites a multiplication it does not support. Drawing from the same seed
+    # gives both runs the same standard normals, so the ratio between them is
+    # a comparison rather than two independent estimates.
+    unwidened = None
+    if sampler.inflation > 1.0:
+        plain = CovarianceSampler(
+            fit, task.view_indices(), seed, task.hand_eye(), widen=False,
+            flange=task.flange_pose(),
+            flange_repeatability=task.flange_repeatability(),
+        )
+        unwidened = np.full((n_samples, n_quantities), np.nan)
+        for index, draw in enumerate(plain.draw(n_samples)):
+            unwidened[index] = _attempt(task, draw, observations, n_quantities)
+
     rng = np.random.default_rng(None if seed is None else seed + 1)
     perturbations = (
         rng.normal(0.0, noise_px, (n_samples,) + observations.shape)
@@ -102,11 +130,49 @@ def propagate(
     combined = np.full((n_samples, n_quantities), np.nan)
     parameters_only = np.full((n_samples, n_quantities), np.nan)
     noise_only = np.full((n_samples, n_quantities), np.nan)
+    # A fourth run, only when there is a hand-eye transform to separate out.
+    # Without it the parameter share answers "would re-calibrating help" but not
+    # "re-calibrate what", which for a robot cell is the question that decides
+    # where the money goes.
+    wants_split = task.hand_eye() is not None
+    hand_eye_only = (
+        np.full((n_samples, n_quantities), np.nan) if wants_split else None
+    )
+    wants_robot = (
+        task.flange_pose() is not None and task.flange_repeatability() is not None
+    )
+    robot_only = (
+        np.full((n_samples, n_quantities), np.nan) if wants_robot else None
+    )
     for index, draw in enumerate(draws):
         noisy = observations + perturbations[index]
         combined[index] = _attempt(task, draw, noisy, n_quantities)
         parameters_only[index] = _attempt(task, draw, observations, n_quantities)
         noise_only[index] = _attempt(task, nominal_sample, noisy, n_quantities)
+        if hand_eye_only is not None:
+            hand_eye_only[index] = _attempt(
+                task,
+                ParameterSample(
+                    camera=nominal_sample.camera,
+                    poses=nominal_sample.poses,
+                    hand_eye=draw.hand_eye,
+                    flange=nominal_sample.flange,
+                ),
+                observations,
+                n_quantities,
+            )
+        if robot_only is not None:
+            robot_only[index] = _attempt(
+                task,
+                ParameterSample(
+                    camera=nominal_sample.camera,
+                    poses=nominal_sample.poses,
+                    hand_eye=nominal_sample.hand_eye,
+                    flange=draw.flange,
+                ),
+                observations,
+                n_quantities,
+            )
 
     combined, parameters_only, noise_only = _drop_failures(
         task, combined, parameters_only, noise_only
@@ -121,6 +187,10 @@ def propagate(
         observation_noise_px=noise_px,
         sampler_rank=sampler.rank,
         sampler_size=sampler.n_free,
+        intrinsic_inflation=sampler.inflation,
+        hand_eye_only=hand_eye_only,
+        robot_only=robot_only,
+        unwidened_parameters=unwidened,
     )
 
 
@@ -130,6 +200,7 @@ def propagate_all(
     n_samples: int = DEFAULT_SAMPLES,
     observation_noise_px: Optional[float] = None,
     seed: Optional[int] = 0,
+    widen: bool = True,
 ) -> Tuple[TaskResult, ...]:
     """Propagate several tasks against one calibration.
 
@@ -147,7 +218,7 @@ def propagate_all(
     return tuple(
         propagate(
             fit, task, n_samples, observation_noise_px,
-            None if seed is None else seed + 7919 * index,
+            None if seed is None else seed + 7919 * index, widen,
         )
         for index, task in enumerate(tasks)
     )

@@ -467,3 +467,33 @@ def test_a_pose_that_cannot_be_solved_names_the_view(monkeypatch, session_with_p
     monkeypatch.setattr(PinholeProjector, "solve_pose", always_fail)
     with pytest.raises(RefitError, match="could not solve a pose"):
         instrument(session_with_prior, RefitOptions(refit=False))
+
+
+def test_refit_without_drops_the_named_views(good_capture):
+    """Exclusion needs no robust loss, which is why it is reachable today."""
+    from calibsense.refit.engine import refit_without
+
+    session = CalibrationSession(observations=good_capture.observations)
+    full = instrument(session)
+    dropped = list(good_capture.observations.view_ids[:2])
+    reduced = refit_without(session, dropped)
+    assert reduced.n_views == full.n_views - 2
+    assert not set(dropped) & set(reduced.view_ids)
+
+
+def test_refit_without_rejects_a_view_it_does_not_have(good_capture):
+    from calibsense.refit.engine import refit_without
+
+    session = CalibrationSession(observations=good_capture.observations)
+    with pytest.raises(ValidationError, match="not in this session"):
+        refit_without(session, ["no-such-view"])
+
+
+def test_refit_without_refuses_to_leave_too_few_views(good_capture):
+    """Replacing one unreliable covariance with another is not an improvement."""
+    from calibsense.refit.engine import refit_without
+
+    session = CalibrationSession(observations=good_capture.observations)
+    everything = list(good_capture.observations.view_ids)
+    with pytest.raises(ValidationError, match="would leave"):
+        refit_without(session, everything[:-1])

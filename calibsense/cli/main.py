@@ -41,7 +41,14 @@ from ..ingest import (
     session_from_images,
 )
 from ..diagnose import diagnose
-from ..io import load_fit, load_session, save_fit, save_session
+from ..io import (
+    EXPORT_FORMATS,
+    export_calibration,
+    load_fit,
+    load_session,
+    save_fit,
+    save_session,
+)
 from ..noisefloor import MIN_PRESENCE, measure_noise_floor
 from ..refit import RefitOptions, instrument, set_single_threaded
 from ..report import ReportMetadata, render_text, run_audit, write_json, write_pdf
@@ -96,6 +103,28 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser, required: bool) 
         "--calibration-format",
         choices=[name for name, _ in reader_names()],
         help="force a reader instead of detecting the format",
+    )
+
+
+def _add_calibration_output_arguments(parser: argparse.ArgumentParser) -> None:
+    """Let a command write the intrinsics it just fitted back out to a file.
+
+    The refit produces a calibration whether or not anyone asked for one, so
+    withholding it would mean telling a user their intrinsics are wrong while
+    sitting on better ones.
+    """
+    group = parser.add_argument_group("calibration output")
+    group.add_argument(
+        "--calibration-out", metavar="FILE",
+        help="write the fitted intrinsics here, with their standard deviations",
+    )
+    group.add_argument(
+        "--calibration-out-format", choices=EXPORT_FORMATS, metavar="NAME",
+        help=(
+            "format for --calibration-out: "
+            + ", ".join(EXPORT_FORMATS)
+            + " (default: from the extension; .yml means opencv)"
+        ),
     )
 
 
@@ -220,6 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     refit.add_argument("-v", "--verbose", action="store_true",
                        help="every view and the full correlation matrix")
     refit.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    _add_calibration_output_arguments(refit)
     refit.set_defaults(handler=_refit)
 
     diagnose_parser = subparsers.add_parser(
@@ -242,6 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="list the diagnostics that found nothing too")
     diagnose_parser.add_argument("--json", action="store_true",
                                  help="emit JSON instead of text")
+    _add_calibration_output_arguments(diagnose_parser)
     diagnose_parser.add_argument("-v", "--verbose", action="store_true",
                                  help="print the full refit report as well")
     _add_cross_validation_arguments(diagnose_parser)
@@ -285,6 +316,35 @@ def build_parser() -> argparse.ArgumentParser:
                         help="where to send questions; printed as the last line")
     report.add_argument("--open-question", metavar="TEXT",
                         help="the question the report puts back to the reader")
+    _add_calibration_output_arguments(report)
+    report.add_argument(
+        "--robot-repeatability", type=float, default=0.0, metavar="MM",
+        help=(
+            "the arm's positional repeatability in mm, from its datasheet; "
+            "sampled into a base-frame task. Without it the flange is treated "
+            "as exact"
+        ),
+    )
+    report.add_argument(
+        "--robot-repeatability-deg", type=float, default=0.0, metavar="DEG",
+        help="the arm's angular repeatability in degrees, if its datasheet gives one",
+    )
+    report.add_argument(
+        "--board-tolerance", type=float, default=0.0, metavar="RELATIVE",
+        help=(
+            "relative uncertainty in the target's pitch, e.g. 0.001 for a board "
+            "good to 0.1%%; folded into the hand-eye covariance. Without it the "
+            "board is treated as exact and the report says what that costs"
+        ),
+    )
+    report.add_argument(
+        "--no-widen", action="store_true",
+        help=(
+            "propagate the classical covariance instead of widening it to the "
+            "view-clustered estimate; only sound if you have independent reason "
+            "to trust the residual noise model"
+        ),
+    )
     report.add_argument("--noise-px", type=float, metavar="SIGMA",
                         help="pixel noise to propagate, instead of the one inferred "
                              "from this fit's residuals; take it from the `use` line "
@@ -386,9 +446,16 @@ def _refit(args: argparse.Namespace) -> int:
         print(json.dumps(render.fit_to_json(fit), indent=2))
     else:
         print(render.render_fit(fit, args.verbose), end="")
+    stream = sys.stderr if args.json else sys.stdout
     if args.output:
         path = save_fit(fit, args.output)
-        print(f"\nwrote {path}", file=sys.stderr if args.json else sys.stdout)
+        print(f"\nwrote {path}", file=stream)
+    if args.calibration_out:
+        path = export_calibration(
+            fit, args.calibration_out, args.calibration_out_format,
+            getattr(args, "camera_name", "camera"),
+        )
+        print(f"wrote {path}", file=stream)
     return EXIT_OK
 
 
@@ -434,9 +501,16 @@ def _diagnose(args: argparse.Namespace) -> int:
             print(render.render_fit(fit, verbose=True), end="")
             print()
         print(render.render_diagnosis(diagnosis, include_ok=args.all), end="")
+    stream = sys.stderr if args.json else sys.stdout
     if args.output:
         path = save_fit(fit, args.output)
-        print(f"\nwrote {path}", file=sys.stderr if args.json else sys.stdout)
+        print(f"\nwrote {path}", file=stream)
+    if args.calibration_out:
+        path = export_calibration(
+            fit, args.calibration_out, args.calibration_out_format,
+            getattr(args, "camera_name", "camera"),
+        )
+        print(f"wrote {path}", file=stream)
     return EXIT_OK if diagnosis.severity.name != "CRITICAL" else EXIT_FINDINGS
 
 
@@ -472,7 +546,8 @@ def _report(args: argparse.Namespace) -> int:
         session, options, tasks, ReportMetadata(**metadata_fields),
         folds=args.folds, n_samples=args.samples, mounting=args.mounting,
         observation_noise_px=args.noise_px,
-        seed=args.seed,
+        seed=args.seed, widen=not args.no_widen,
+        board_scale_sigma=args.board_tolerance,
     )
     if needs_hand_eye:
         if audit.hand_eye is None:
@@ -484,9 +559,14 @@ def _report(args: argparse.Namespace) -> int:
             return EXIT_INPUT
         flange = session.robot.aligned_with(session.observations)[0]
         audit = run_audit(
-            session, options, parse_tasks(args.task, audit.hand_eye, flange),
+            session, options, parse_tasks(
+                args.task, audit.hand_eye, flange,
+                (args.robot_repeatability, args.robot_repeatability_deg),
+            ),
             ReportMetadata(**metadata_fields), folds=args.folds,
             n_samples=args.samples, mounting=args.mounting, seed=args.seed,
+            observation_noise_px=args.noise_px, widen=not args.no_widen,
+            board_scale_sigma=args.board_tolerance,
         )
 
     print(render_text(audit), end="")
@@ -495,11 +575,19 @@ def _report(args: argparse.Namespace) -> int:
         written.append(write_pdf(audit, args.pdf))
     if args.json_path:
         written.append(write_json(audit, args.json_path))
+    if args.calibration_out:
+        written.append(
+            export_calibration(
+                audit.fit, args.calibration_out, args.calibration_out_format,
+                args.camera_name,
+            )
+        )
     for path in written:
         print(f"wrote {path}")
     if not written:
         print(
-            "\nnothing written; pass --pdf and/or --json to save the report",
+            "\nnothing written; pass --pdf, --json and/or --calibration-out "
+            "to save the report",
             file=sys.stderr,
         )
     return EXIT_OK if audit.severity.name != "CRITICAL" else EXIT_FINDINGS

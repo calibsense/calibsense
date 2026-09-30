@@ -61,11 +61,20 @@ from .normal import POSE_DIMENSION, NormalEquations
 DENSE_LIMIT = 64_000_000
 
 #: Fewest views a view-clustered covariance needs before it is worth quoting.
-#: A sandwich built from `G` clusters has roughly `G - 1` degrees of freedom, and
-#: below about ten the estimate is itself so noisy that it would trade one
-#: unchecked number for another: across repeated realisations of the same rig its
-#: own spread was 21 to 45 per cent at fourteen views and it grows sharply as the
-#: count falls.
+#: An estimate built from `G` clusters has roughly `G - 1` degrees of freedom, and
+#: below about ten it is itself so noisy that quoting it would trade one
+#: unchecked number for another. Across repeated realisations of the same rig its
+#: own relative spread, re-measured for the leverage-corrected form:
+#:
+#:      G = 8     32-48%
+#:      G = 10    29-42%
+#:      G = 14    26-36%
+#:      G = 20    18-29%
+#:      G = 30    16-27%
+#:
+#: Ten is where the spread stops growing sharply rather than where it becomes
+#: small; it is still a third at that point, which is why `inflation_floor`
+#: carries a `G` term instead of the finding comparing against a constant.
 MIN_CLUSTERS_FOR_ROBUST = 10
 
 #: Scaled eigenvalue ratio below which a direction counts as poorly determined.
@@ -127,9 +136,27 @@ class RobustCovariance:
 
     So this estimate drops the assumption instead of refining it. Each view
     contributes one score `s_i` for the intrinsics, and the covariance comes
-    from the scatter of those scores:
+    from the scatter of the displacement each view would cause if it were
+    dropped:
 
-        Cov = S^-1 (sum_i s_i s_i') S^-1 * G / (G - 1)
+        d_i = S^-1/2 (I - M_i)^-1/2 S^-1/2 s_i,   M_i = S^-1/2 S_i S^-1/2
+
+        Cov = (G - 1) / G * sum_i (d_i - d_bar)(d_i - d_bar)'
+
+    `M_i` is view `i`'s leverage, and the correction matters. Without it — the
+    plain sandwich with a `G / (G - 1)` scaling, which is what this used to be —
+    residuals evaluated at a fitted optimum are shrunk towards it, and the
+    estimate came out at 0.73 of the true spread at fourteen views under
+    correlated noise. The full leave-one-out correction, `(I - M_i)^-1`,
+    overshoots to 1.37. The square root sits at 0.95, and the same ordering
+    holds at thirty views and under noise that obeys the model. See
+    `leave_one_out_steps`.
+
+    A consequence worth stating plainly: the correction makes this estimate
+    deliberately conservative, so it sits about a fifth above the classical one
+    even when the noise model is perfectly satisfied. That offset is not a
+    signal, and `diagnose.noise` compares against a floor measured from this
+    null rather than against one.
 
     Nothing is assumed about the noise *within* a view, so anisotropy, blur,
     neighbour correlation and heavy tails are all absorbed rather than
@@ -137,12 +164,19 @@ class RobustCovariance:
     the same argument `calibsense.diagnose.model` already makes for the radial
     residual profile, applied to the parameters instead of the residuals.
 
-    Two things it cannot do. It is blind to any error that is *identical*
+    Three things it cannot do. It is blind to any error that is *identical*
     across views — a board scale error moves every view coherently, so it
     contributes nothing to the between-view scatter and stays invisible here.
     And it covers the intrinsics only: each view's pose is estimated from that
     view's own residuals, so there is exactly one cluster per pose and no
-    between-cluster scatter to build a pose block from.
+    between-cluster scatter to build a pose block from. And it wants the views
+    to outnumber the free intrinsics: leverages sum to `p` across `G` views, so
+    as `p` approaches `G` every view becomes near-decisive and the correction is
+    applied at the edge of where it is defined. `MAX_VIEW_LEVERAGE` keeps that
+    finite rather than letting it run away, and it was enough to hold a
+    fourteen-coefficient fit on twelve views to a ratio of 1.4 — but a model
+    that over-parameterised has an identifiability problem the conditioning
+    report names long before this one matters.
 
     Attributes:
         covariance: Sandwich covariance of the free intrinsics, shape `(p, p)`.
@@ -279,6 +313,80 @@ class CalibrationCovariance:
         if ratios.size == 0 or not np.any(np.isfinite(ratios)):
             return float("nan")
         return float(np.nanmax(ratios))
+
+    def widened_intrinsic(
+        self, rcond: float = DEFAULT_RCOND
+    ) -> Tuple[np.ndarray, float]:
+        """The intrinsic covariance widened wherever the views say it is too tight.
+
+        `worst_robust_inflation` names a factor and leaves the reader to apply
+        it. This applies it, and does so without inventing a scalar to multiply
+        the whole matrix by.
+
+        The two estimates are compared in the basis that whitens the classical
+        one: solving `A_r v = lambda A v` gives, per direction, the ratio of the
+        two variances. Every `lambda` above one is a direction where the
+        between-view scatter is wider than the noise model predicted, and those
+        are raised; every `lambda` below one is left alone. Clamping rather than
+        substituting matters, because the sandwich is mildly optimistic at low
+        view counts and swapping it in wholesale would *narrow* the intervals on
+        a clean short capture on the strength of a noisy estimate. Widening only
+        where there is evidence to widen cannot make a report overconfident.
+
+        Directions the fit did not determine at all keep their zero variance. A
+        pseudo-inverse assigned them none, and there is no interval there to
+        widen — `bounded` is what reports that, not this.
+
+        Args:
+            rcond: Numerical cut for the whitening. Eigenvalues of the classical
+                covariance below this fraction of the largest are the ones a
+                pseudo-inverse already zeroed, and they stay zero. This is a
+                machine-precision cut and not `WEAK_DIRECTION_THRESHOLD`: the
+                distortion coefficients have variances eight or nine orders
+                below the focal length's on a perfectly healthy capture, so the
+                weak-direction cut would discard them as unconstrained and
+                silently drop them out of the sampling.
+
+        Returns:
+            `(covariance, inflation)` — the widened matrix, and the largest
+            ratio of widened to classical standard deviation across the free
+            intrinsics. An inflation of one means the matrix came back
+            untouched.
+
+            The ratio is reported per parameter rather than per direction on
+            purpose. The largest ratio over *any* linear combination is a much
+            noisier number — on a clean 24-view capture it reaches 1.6 while no
+            parameter's own deviation moves by more than four per cent, because
+            the direction it picks out carries almost no variance. Quoting that
+            would raise an alarm the data does not support, and the per-
+            parameter figure is the one a reader can check against the parameter
+            table.
+        """
+        classical = np.asarray(self.intrinsic, dtype=float)
+        if self.robust is None or not self.robust.usable:
+            return classical, 1.0
+
+        eigenvalues, vectors = np.linalg.eigh(0.5 * (classical + classical.T))
+        largest = float(eigenvalues[-1]) if eigenvalues.size else 0.0
+        keep = eigenvalues > max(largest, 0.0) * rcond
+        if not np.any(keep):
+            return classical, 1.0
+
+        root = vectors[:, keep] * np.sqrt(eigenvalues[keep])
+        whitener = vectors[:, keep] / np.sqrt(eigenvalues[keep])
+        ratios, directions = np.linalg.eigh(
+            whitener.T @ np.asarray(self.robust.covariance, dtype=float) @ whitener
+        )
+        scaled = (root @ directions) * np.maximum(ratios, 1.0) ** 0.5
+        matrix = scaled @ scaled.T
+
+        # At least one eigenvalue survived the cut above, so the trace is
+        # positive and some diagonal entry is too; there is always something to
+        # take a ratio against here.
+        before = np.diag(classical)
+        determined = before > 0
+        inflation = np.sqrt((np.diag(matrix)[determined] / before[determined]).max())
+        return matrix, float(max(inflation, 1.0))
 
     def extrinsic_block(self, view: int) -> np.ndarray:
         """Covariance of one view's pose parameters.
@@ -589,6 +697,99 @@ def covariance_from_normal_equations(
     )
 
 
+#: Largest per-view leverage the CR2 correction will act on. A view that alone
+#: determined a direction would have leverage one there and an infinite
+#: correction; clamping just below one keeps such a direction from swamping the
+#: estimate, and a capture with a view that dominant has an identifiability
+#: problem the conditioning report names first.
+MAX_VIEW_LEVERAGE = 0.99
+
+
+def _symmetric_root(matrix: np.ndarray, rcond: float) -> np.ndarray:
+    """The symmetric square root of a positive semi-definite matrix.
+
+    Only ever used on a *covariance*, never on an information matrix. Taking a
+    negative power of the Schur complement directly would need a cut that says
+    which of its eigenvalues are zero, and its eigenvalues carry the units of
+    the parameters — a focal length in pixels beside a distortion coefficient
+    that is dimensionless — so any relative cut on them means something
+    different for each parameter and silently discards whichever ones happen to
+    be small in their own units. Rooting the pseudo-inverse instead inherits the
+    rank decision the module already made in the Jacobi-scaled basis, and a
+    positive power cannot amplify anything.
+
+    Args:
+        matrix: The matrix to root.
+        rcond: Eigenvalues below this fraction of the largest are treated as
+            zero. Only exact null directions are at stake here, because the
+            power is positive.
+
+    Returns:
+        The root, symmetric by construction.
+    """
+    eigenvalues, vectors = np.linalg.eigh(0.5 * (matrix + matrix.T))
+    largest = max(float(eigenvalues[-1]) if eigenvalues.size else 0.0, 0.0)
+    keep = eigenvalues > largest * rcond
+    scaled = np.zeros_like(eigenvalues)
+    scaled[keep] = np.sqrt(eigenvalues[keep])
+    return (vectors * scaled) @ vectors.T
+
+
+def leave_one_out_steps(
+    information: np.ndarray,
+    scores: np.ndarray,
+    schur_inverse: np.ndarray,
+    rcond: float = DEFAULT_RCOND,
+) -> np.ndarray:
+    """How far the intrinsics would move if each view were dropped, to first order.
+
+    Removing view `i` leaves the remaining gradient at `-s_i`, because the total
+    gradient vanishes at the optimum, and the remaining curvature at `S - S_i`.
+    One Newton step is therefore `(S - S_i)^-1 s_i`, which is the *exact*
+    leave-one-out displacement for a linear model and first-order correct here —
+    the order at which everything else in this module is computed. Measured
+    against actually refitting without each view, the two agree to within six per
+    cent in scale and correlate above 0.99 per view, so the jackknife this
+    enables costs a `p x p` solve rather than `G` refits.
+
+    What is returned is the **CR2** form rather than that step. Writing the
+    view's leverage as `M_i = S^-1/2 S_i S^-1/2`, the leave-one-out step is
+    `S^-1/2 (I - M_i)^-1 S^-1/2 s_i` and this returns
+
+        S^-1/2 (I - M_i)^-1/2 S^-1/2 s_i
+
+    the square root of the same correction. The reason is measured rather than
+    aesthetic. Against the empirical spread of repeated refits, the uncorrected
+    scores (the plain sandwich) run 0.73 of the truth under correlated noise and
+    the full leave-one-out correction runs 1.37, overshooting as badly as the
+    sandwich undershot; the square root sits at 0.95. The same ordering holds at
+    thirty views and under noise that obeys the model.
+
+    Args:
+        information: Each view's contribution to the intrinsic information,
+            shape `(v, p, p)`, summing to the Schur complement.
+        scores: Each view's score for the intrinsics, shape `(v, p)`.
+        schur_inverse: `S^+`, already computed for the classical covariance. Its
+            square root is what the leverage is measured in, so the correction
+            inherits the module's existing rank decision rather than making a
+            second one in the parameters' own units.
+        rcond: Relative eigenvalue cut for the root, which only has to separate
+            exact null directions.
+
+    Returns:
+        A `(v, p)` array of displacements, one per view.
+    """
+    root_inverse = _symmetric_root(schur_inverse, rcond)
+    steps = np.empty_like(scores)
+    for index, block in enumerate(information):
+        leverage = root_inverse @ block @ root_inverse
+        eigenvalues, vectors = np.linalg.eigh(0.5 * (leverage + leverage.T))
+        remaining = 1.0 - np.clip(eigenvalues, 0.0, MAX_VIEW_LEVERAGE)
+        adjust = (vectors * remaining ** -0.5) @ vectors.T
+        steps[index] = root_inverse @ adjust @ root_inverse @ scores[index]
+    return steps
+
+
 def _robust_covariance(
     equations: NormalEquations, schur_inverse: np.ndarray, rcond: float
 ) -> Optional[RobustCovariance]:
@@ -609,14 +810,11 @@ def _robust_covariance(
     clusters = int(scores.shape[0])
     if clusters < 2:
         return None
-    # G / (G - 1) is the standard small-sample correction for a cluster-robust
-    # estimator. It does not fully undo the shrinkage of residuals at a fitted
-    # optimum, so this estimate stays mildly optimistic at low view counts —
-    # measured 0.67 to 0.96 of the true spread at fourteen views, 0.79 to 1.05
-    # at thirty. That is the right direction to be wrong in only because the
-    # alternative it replaces was out by a factor of eight.
-    meat = scores.T @ scores * (clusters / (clusters - 1.0))
-    covariance = schur_inverse @ meat @ schur_inverse
+
+    information = equations.schur_contributions(rcond)
+    steps = leave_one_out_steps(information, scores, schur_inverse, rcond)
+    centred = steps - steps.mean(axis=0)
+    covariance = centred.T @ centred * ((clusters - 1.0) / clusters)
     return RobustCovariance(
         covariance=0.5 * (covariance + covariance.T),
         n_clusters=clusters,

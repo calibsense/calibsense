@@ -366,60 +366,23 @@ def _refine(
     return camera, target
 
 
-def solve_hand_eye(
-    fit: InstrumentedFit,
-    session: CalibrationSession,
-    mounting: str = "eye_in_hand",
-    rcond: float = DEFAULT_RCOND,
-    monte_carlo: bool = True,
-    n_samples: int = 200,
-    seed: Optional[int] = 0,
-) -> HandEyeResult:
-    """Estimate the hand-eye transform and its covariance.
+def _solve_transforms(
+    mounting: str, robots: Sequence[Pose], boards: Sequence[Pose]
+) -> Tuple[Pose, Pose, int]:
+    """Solve for the two transforms from a set of robot and board poses.
+
+    Split out of `solve_hand_eye` so the same refinement can be run against
+    board poses that have been deliberately perturbed, which is how the board
+    scale sensitivity is measured.
 
     Args:
-        fit: The instrumented refit, whose per-view poses are the target's pose
-            in the camera.
-        session: The session the fit came from, for its robot poses.
-        mounting: `"eye_in_hand"` when the camera rides the flange,
-            `"eye_to_hand"` when it is fixed in the cell.
-        rcond: Relative eigenvalue cut when inverting the normal equations.
-        monte_carlo: Resample calibrations to get a covariance that accounts for
-            the camera poses being estimated rather than measured. On by default
-            because the residual-only alternative was measured to understate the
-            translation deviation threefold; turn it off for speed when the
-            number is not going to be quoted.
-        n_samples: Calibrations to resample when `monte_carlo` is set.
-        seed: Seed for the resampling.
+        mounting: `"eye_in_hand"` or `"eye_to_hand"`.
+        robots: Gripper-to-base poses, one per view.
+        boards: Target-in-camera poses, one per view.
 
     Returns:
-        The transform, its covariance, and the residuals behind them.
-
-    Raises:
-        ValidationError: The mounting is unknown, the session has no robot poses,
-            there are too few views, or the robot never rotated enough for the
-            problem to be determined.
+        `(camera, target, iterations)`.
     """
-    if mounting not in MOUNTINGS:
-        raise ValidationError(
-            f"unknown mounting {mounting!r}; expected one of {list(MOUNTINGS)}"
-        )
-    if session.robot is None:
-        raise ValidationError(
-            "this session carries no robot poses; ingest them with --robot-poses"
-        )
-    if fit.view_ids != session.observations.view_ids:
-        raise ValidationError(
-            "the fit and the session cover different views, so the robot poses "
-            "cannot be aligned to the camera poses"
-        )
-    robots = list(session.robot.aligned_with(session.observations))
-    boards = list(fit.poses)
-    if len(robots) < MIN_VIEWS:
-        raise ValidationError(
-            f"hand-eye needs at least {MIN_VIEWS} views, got {len(robots)}"
-        )
-
     camera, target = _initial_guess(mounting, robots, boards)
     weights = _weights(1.0, 1.0)
     cost = float(
@@ -465,6 +428,172 @@ def solve_hand_eye(
             camera, target, cost = trial_camera, trial_target, trial
             if improvement < TOLERANCE:
                 break
+    return camera, target, iterations
+
+
+#: Board scale perturbation used to measure the hand-eye sensitivity, as a
+#: fraction. The response is linear to well within a per cent over the range
+#: that matters — measured at 6.95 to 7.03 times the board error across
+#: perturbations from 0.1% to 1% — so the size of the probe does not matter and
+#: a small one keeps it inside the linear regime by construction.
+BOARD_SCALE_PROBE = 0.001
+
+
+def board_scale_jacobian(
+    mounting: str,
+    robots: Sequence[Pose],
+    boards: Sequence[Pose],
+    camera: Pose,
+    target: Pose,
+) -> np.ndarray:
+    """How both transforms move per unit of board scale error.
+
+    Expressed as right-multiplied local increments, which is the chart
+    `_apply` updates in and therefore the chart the covariance lives in, so the
+    result can be added to that covariance directly.
+
+    Args:
+        mounting: `"eye_in_hand"` or `"eye_to_hand"`.
+        robots: Gripper-to-base poses, one per view.
+        boards: Target-in-camera poses, one per view.
+        camera: The camera transform the unperturbed solve produced.
+        target: The target transform the unperturbed solve produced.
+
+    Returns:
+        A twelve-vector of derivatives, camera then target, each ordered
+        `[rx, ry, rz, tx, ty, tz]`. All zeros when the perturbed solve does not
+        converge.
+    """
+    scaled = [_scaled_translation(pose, 1.0 + BOARD_SCALE_PROBE) for pose in boards]
+    try:
+        moved_camera, moved_target, _ = _solve_transforms(mounting, robots, scaled)
+    except (ValidationError, np.linalg.LinAlgError):
+        return np.zeros(12)
+    return np.concatenate([
+        camera.inverse().compose(moved_camera).parameter_vector(),
+        target.inverse().compose(moved_target).parameter_vector(),
+    ]) / BOARD_SCALE_PROBE
+
+
+def board_scale_sensitivity(
+    mounting: str, robots: Sequence[Pose], boards: Sequence[Pose], camera: Pose
+) -> float:
+    """How far the camera translation moves per unit of board scale error.
+
+    A target printed 0.1% large is a scale error on every object point, and the
+    fit absorbs it entirely into the poses: the focal length is untouched, every
+    target-in-camera translation comes back scaled by `1 / (1 + eps)`, and the
+    reprojection residual is bit-for-bit unchanged. Nothing in the calibration
+    can see it.
+
+    Hand-eye is where it surfaces, because the robot's flange poses are in true
+    millimetres while the board-derived poses are in board millimetres. The two
+    length references disagree and the translation absorbs the difference —
+    measured at about seven times the board error on a typical cell, the same
+    for both mountings. At a 0.1% board error that is 0.71 mm against a reported
+    uncertainty of 0.25 mm, so the systematic beats the random by a factor of
+    three while staying invisible to every residual statistic.
+
+    Args:
+        mounting: `"eye_in_hand"` or `"eye_to_hand"`.
+        robots: Gripper-to-base poses, one per view.
+        boards: Target-in-camera poses, one per view.
+        camera: The camera transform the unperturbed solve produced.
+
+    Returns:
+        Millimetres of camera-translation shift per unit of relative board scale
+        error, so multiplying by 0.001 gives the shift from a 0.1% board error.
+        Zero when the perturbed solve does not converge.
+    """
+    scaled = [_scaled_translation(pose, 1.0 + BOARD_SCALE_PROBE) for pose in boards]
+    try:
+        perturbed, _, _ = _solve_transforms(mounting, robots, scaled)
+    except (ValidationError, np.linalg.LinAlgError):
+        return 0.0
+    shift = float(
+        np.linalg.norm(
+            np.asarray(perturbed.translation, dtype=float)
+            - np.asarray(camera.translation, dtype=float)
+        )
+    )
+    return shift / BOARD_SCALE_PROBE
+
+
+def _scaled_translation(pose: Pose, scale: float) -> Pose:
+    """The same pose with its translation scaled.
+
+    Args:
+        pose: The pose to scale.
+        scale: Multiplier for the translation.
+
+    Returns:
+        A new pose with the same rotation.
+    """
+    return Pose(pose.rotation, np.asarray(pose.translation, dtype=float) * scale)
+
+
+def solve_hand_eye(
+    fit: InstrumentedFit,
+    session: CalibrationSession,
+    mounting: str = "eye_in_hand",
+    rcond: float = DEFAULT_RCOND,
+    monte_carlo: bool = True,
+    n_samples: int = 200,
+    seed: Optional[int] = 0,
+    board_scale_sigma: float = 0.0,
+) -> HandEyeResult:
+    """Estimate the hand-eye transform and its covariance.
+
+    Args:
+        fit: The instrumented refit, whose per-view poses are the target's pose
+            in the camera.
+        session: The session the fit came from, for its robot poses.
+        mounting: `"eye_in_hand"` when the camera rides the flange,
+            `"eye_to_hand"` when it is fixed in the cell.
+        rcond: Relative eigenvalue cut when inverting the normal equations.
+        monte_carlo: Resample calibrations to get a covariance that accounts for
+            the camera poses being estimated rather than measured. On by default
+            because the residual-only alternative was measured to understate the
+            translation deviation threefold; turn it off for speed when the
+            number is not going to be quoted.
+        n_samples: Calibrations to resample when `monte_carlo` is set.
+        seed: Seed for the resampling.
+        board_scale_sigma: Relative standard deviation of the target's pitch,
+            so `0.001` states a board good to a tenth of a per cent. Zero, the
+            default, treats the board as exact and leaves the covariance
+            describing random error alone — the board-scale finding then says
+            what that assumption is worth. Inventing a figure here would be
+            worse than saying so, which is why there is no default but zero.
+
+    Returns:
+        The transform, its covariance, and the residuals behind them.
+
+    Raises:
+        ValidationError: The mounting is unknown, the session has no robot poses,
+            there are too few views, or the robot never rotated enough for the
+            problem to be determined.
+    """
+    if mounting not in MOUNTINGS:
+        raise ValidationError(
+            f"unknown mounting {mounting!r}; expected one of {list(MOUNTINGS)}"
+        )
+    if session.robot is None:
+        raise ValidationError(
+            "this session carries no robot poses; ingest them with --robot-poses"
+        )
+    if fit.view_ids != session.observations.view_ids:
+        raise ValidationError(
+            "the fit and the session cover different views, so the robot poses "
+            "cannot be aligned to the camera poses"
+        )
+    robots = list(session.robot.aligned_with(session.observations))
+    boards = list(fit.poses)
+    if len(robots) < MIN_VIEWS:
+        raise ValidationError(
+            f"hand-eye needs at least {MIN_VIEWS} views, got {len(robots)}"
+        )
+
+    camera, target, iterations = _solve_transforms(mounting, robots, boards)
 
     residuals = _residuals(mounting, camera, target, robots, boards)
     rotation_sigma, translation_sigma = _estimate_sigmas(residuals)
@@ -487,12 +616,35 @@ def solve_hand_eye(
         view_ids=session.observations.view_ids,
         covariance_method="residual",
         iterations=iterations,
+        board_scale_sensitivity_mm=board_scale_sensitivity(
+            mounting, robots, boards, camera
+        ),
+        board_scale_sigma=float(board_scale_sigma),
     )
+    if board_scale_sigma > 0:
+        # A board scale error is one number, so its contribution to the
+        # covariance is rank one: sigma^2 * J J'. Exact to first order, which is
+        # the order the rest of this covariance is computed at, and the
+        # derivative is already in hand from the sensitivity probe. Resampling
+        # it would cost hundreds of solves and add Monte Carlo noise to a term
+        # that has a closed form.
+        jacobian = board_scale_jacobian(mounting, robots, boards, camera, target)
+        systematic = float(board_scale_sigma) ** 2 * np.outer(jacobian, jacobian)
+        result = replace(
+            result,
+            covariance=result.covariance + systematic,
+            residual_covariance=result.residual_covariance + systematic,
+        )
     if not monte_carlo:
         return result
     empirical, _ = resample_covariance(
         result, fit, session, robots, weights, n_samples, seed
     )
+    if board_scale_sigma > 0:
+        jacobian = board_scale_jacobian(mounting, robots, boards, camera, target)
+        empirical = empirical + float(board_scale_sigma) ** 2 * np.outer(
+            jacobian, jacobian
+        )
     return replace(
         result,
         covariance=empirical,

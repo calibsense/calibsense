@@ -61,11 +61,15 @@ class ParameterSample:
             Sampled independently of the intrinsics, because the hand-eye solve
             already folded the calibration's uncertainty into its own covariance
             and counting it twice would inflate the interval.
+        flange: The sampled robot flange pose at measurement time, when the task
+            declares a repeatability. `None` means the arm is taken as exact,
+            which is what a robot specification sheet is for.
     """
 
     camera: CameraModel
     poses: Tuple[Pose, ...] = ()
     hand_eye: Optional[Pose] = None
+    flange: Optional[Pose] = None
 
 
 def joint_covariance(
@@ -112,6 +116,65 @@ def joint_covariance(
     return 0.5 * (joint + joint.T), tuple(names)
 
 
+def with_intrinsic_block(
+    joint: np.ndarray, p: int, intrinsic: np.ndarray, rcond: float = SAMPLING_RCOND
+) -> np.ndarray:
+    """Rebuild a joint covariance around a different intrinsic block.
+
+    Swapping the top-left block in place would leave a matrix that is no longer
+    a covariance: the cross and pose blocks were derived from the block being
+    replaced, and left untouched they can make the result indefinite. What is
+    preserved instead is the *conditional* structure, which is the part the
+    substitution says nothing about.
+
+    Write the classical joint as `[[A, C], [C', P]]`. The poses' regression on
+    the intrinsics is `B = A^+ C` and their conditional covariance is
+    `P - C' A^+ C`; neither involves the marginal spread of the intrinsics.
+    Keeping both and putting `A_w` in the marginal's place gives
+
+        [[A_w,     A_w B     ],
+         [B' A_w,  P - C' A^+ C + B' A_w B]]
+
+    which is `M diag(A_w, P - C' A^+ C) M'` for `M = [[I, 0], [B', I]]`, so it
+    is positive semi-definite whenever both diagonal blocks are, and it reduces
+    to the original joint exactly when `A_w` is `A`. To first order — the order
+    the covariance was linearised at in the first place — this is the same
+    distribution with a wider intrinsic marginal.
+
+    Args:
+        joint: The classical joint covariance.
+        p: Number of intrinsic rows, which the block boundary sits after.
+        intrinsic: The replacement `(p, p)` intrinsic block.
+        rcond: Cut for the pseudo-inverse of the original intrinsic block.
+
+    Returns:
+        The rebuilt joint covariance, symmetrised.
+
+    Raises:
+        ValidationError: The replacement is the wrong shape.
+    """
+    replacement = np.asarray(intrinsic, dtype=float)
+    if replacement.shape != (p, p):
+        raise ValidationError(
+            f"intrinsic block is {replacement.shape}, expected {(p, p)}"
+        )
+    if p == joint.shape[0]:
+        return 0.5 * (replacement + replacement.T)
+
+    original = joint[:p, :p]
+    cross = joint[:p, p:]
+    poses = joint[p:, p:]
+    regression = np.linalg.pinv(original, rcond=rcond) @ cross
+    conditional = poses - cross.T @ regression
+
+    rebuilt = np.empty_like(joint)
+    rebuilt[:p, :p] = replacement
+    rebuilt[:p, p:] = replacement @ regression
+    rebuilt[p:, :p] = rebuilt[:p, p:].T
+    rebuilt[p:, p:] = conditional + regression.T @ replacement @ regression
+    return 0.5 * (rebuilt + rebuilt.T)
+
+
 def factorise(
     matrix: np.ndarray, rcond: float = SAMPLING_RCOND
 ) -> Tuple[np.ndarray, int]:
@@ -147,6 +210,9 @@ class CovarianceSampler:
             space. `False` means the fit left a direction unconstrained, so the
             samples understate the true spread and any interval derived from
             them is a lower bound.
+        inflation: How much the intrinsic block was widened by the view-clustered
+            estimate before sampling. One means the noise model held on this
+            capture and the classical covariance was sampled unchanged.
     """
 
     def __init__(
@@ -155,9 +221,18 @@ class CovarianceSampler:
         view_indices: Sequence[int] = (),
         seed: Optional[int] = 0,
         hand_eye: Optional["HandEyeResult"] = None,
+        widen: bool = True,
+        flange: Optional[Pose] = None,
+        flange_repeatability: Optional[Tuple[float, float]] = None,
     ):
         self.fit = fit
         self.hand_eye = hand_eye
+        self.flange = flange
+        # (translation mm, rotation degrees), both one standard deviation. The
+        # arm's own repeatability is independent of anything the calibration
+        # measured, so it is drawn on its own rather than through the joint
+        # covariance.
+        self.flange_repeatability = flange_repeatability
         self._hand_eye_factor = (
             factorise(hand_eye.camera_covariance)[0] if hand_eye is not None else None
         )
@@ -166,6 +241,13 @@ class CovarianceSampler:
         self._covariance, self.names = joint_covariance(
             fit.covariance, self.view_indices
         )
+        self.inflation = 1.0
+        if widen:
+            widened, self.inflation = fit.covariance.widened_intrinsic()
+            if self.inflation > 1.0:
+                self._covariance = with_intrinsic_block(
+                    self._covariance, fit.covariance.n_intrinsic, widened
+                )
         self._factor, self.rank = factorise(self._covariance)
         self._block = parameter_block(fit.camera, fit.options)
         self._reduction = self._block.reduction()
@@ -190,6 +272,7 @@ class CovarianceSampler:
             camera=self.fit.camera,
             poses=tuple(self.fit.poses[i] for i in self.view_indices),
             hand_eye=None if self.hand_eye is None else self.hand_eye.camera,
+            flange=self.flange,
         )
 
     def draw(self, n_samples: int) -> List[ParameterSample]:
@@ -213,6 +296,13 @@ class CovarianceSampler:
             if self._hand_eye_factor is not None
             else None
         )
+        flange_steps = None
+        if self.flange is not None and self.flange_repeatability is not None:
+            translation_sd, rotation_sd = self.flange_repeatability
+            flange_steps = np.concatenate([
+                self._rng.normal(0.0, np.radians(rotation_sd), (n_samples, 3)),
+                self._rng.normal(0.0, translation_sd, (n_samples, 3)),
+            ], axis=1)
         p = self.fit.covariance.n_intrinsic
         model = type(self.fit.camera)
         samples: List[ParameterSample] = []
@@ -226,6 +316,19 @@ class CovarianceSampler:
                 # Dropping it would bias the interval downwards, so the nominal
                 # camera stands in and the caller sees the count.
                 camera = self.fit.camera
+            # Added to the rotation vector, not applied as a tangent-space
+            # increment. The rotation vector is a distorted chart and every
+            # calibration view sits near |rvec| = pi, where the distortion is
+            # worst, so this looks like exactly the wrong choice — and it is
+            # the right one, because the covariance being sampled came from a
+            # Jacobian taken with respect to that same rotation vector. It
+            # describes a spread in chart coordinates and adding to them reads
+            # it back faithfully. Measured against the spread of repeated
+            # refits at |rvec| = 179 degrees: this lands within 8 per cent,
+            # while a right-multiplied increment built from the same numbers
+            # comes out two thirds too wide. The gap between the two is the
+            # exponential map's right Jacobian, sin(t/2) / (t/2), which is 0.99
+            # at twenty degrees and 0.64 at a hundred and eighty.
             poses = tuple(
                 Pose.from_parameter_vector(
                     nominal + step[p + POSE_DIMENSION * slot : p + POSE_DIMENSION * (slot + 1)]
@@ -239,7 +342,12 @@ class CovarianceSampler:
                 hand_eye = self.hand_eye.camera.compose(
                     Pose.from_parameter_vector(hand_eye_steps[len(samples)])
                 )
-            samples.append(ParameterSample(camera, poses, hand_eye))
+            flange = self.flange
+            if flange_steps is not None:
+                flange = self.flange.compose(
+                    Pose.from_parameter_vector(flange_steps[len(samples)])
+                )
+            samples.append(ParameterSample(camera, poses, hand_eye, flange))
         return samples
 
     def marginal_std(self) -> np.ndarray:

@@ -29,7 +29,9 @@ import pytest
 
 from calibsense.core.camera import PinholeBrownConrady
 from calibsense.core.poses import Pose
+from calibsense.core.observations import ObservationSet
 from calibsense.core.session import CalibrationSession
+from calibsense.diagnose.noise import inflation_floor
 from calibsense.errors import DegenerateSystemError, ValidationError
 from calibsense.refit.covariance import (
     WEAK_DIRECTION_THRESHOLD,
@@ -426,9 +428,10 @@ def test_a_robust_covariance_is_available_and_agrees_under_independent_noise(goo
     assert robust.degrees_of_freedom == covariance.n_views - 1
     assert robust.covariance.shape == covariance.intrinsic.shape
     assert np.allclose(robust.covariance, robust.covariance.T)
-    # 1.4 is the diagnostic's warning cut, measured as the point where signal
-    # leaves the sandwich's own scatter at this view count.
-    assert covariance.worst_robust_inflation() < 1.4
+    # The leverage correction makes this estimate deliberately conservative, so
+    # it sits above the classical one even here; what matters is that it stays
+    # under the diagnostic's floor for this view count rather than under one.
+    assert covariance.worst_robust_inflation() < inflation_floor(robust.n_clusters)
 
 
 @pytest.mark.slow
@@ -456,12 +459,14 @@ def test_the_classical_covariance_lies_when_corner_noise_is_correlated(noiseless
     assert classical.min() < 0.35, f"expected a badly optimistic interval: {classical}"
 
     robust = covariance.robust.std() / empirical
-    assert robust.min() > 0.4, f"robust estimate still far too tight: {robust}"
+    assert robust.min() > 0.55, f"robust estimate still far too tight: {robust}"
     assert robust.max() < 1.8, f"robust estimate wildly too wide: {robust}"
     assert robust.min() > 2.0 * classical.min()
 
     # And the ratio between them is what the report reads to say so.
-    assert covariance.worst_robust_inflation() > 2.0
+    assert covariance.worst_robust_inflation() > 2.0 * inflation_floor(
+        covariance.robust.n_clusters
+    )
 
 
 @pytest.mark.slow
@@ -484,9 +489,11 @@ def test_the_robust_covariance_costs_little_under_independent_noise(noiseless_ca
     assert classical.min() > 0.75 and classical.max() < 1.35, classical
 
     robust = covariance.robust.std() / empirical
-    assert robust.min() > 0.55, f"sandwich collapsed on well-behaved noise: {robust}"
-    assert robust.max() < 1.5, robust
-    assert covariance.worst_robust_inflation() < 1.4
+    assert robust.min() > 0.65, f"estimate collapsed on well-behaved noise: {robust}"
+    assert robust.max() < 1.7, robust
+    assert covariance.worst_robust_inflation() < inflation_floor(
+        covariance.robust.n_clusters
+    )
 
 
 def test_too_few_views_makes_the_robust_covariance_unusable(pinhole, checkerboard):
@@ -534,3 +541,88 @@ def test_a_single_view_has_no_between_view_scatter(pinhole, checkerboard):
     assert equations.degrees_of_freedom > 0
     assert equations.view_scores().shape == (1, equations.n_intrinsic)
     assert covariance_from_normal_equations(equations).robust is None
+
+
+def test_widening_a_covariance_with_no_variance_left_is_a_no_op(good_capture):
+    """The guard for a classical block a pseudo-inverse emptied completely."""
+    import dataclasses
+
+    camera, poses, _, _ = opencv_calibrate(good_capture.observations)
+    _, covariance = covariance_at(camera, poses, good_capture.observations)
+    empty = dataclasses.replace(
+        covariance, intrinsic=np.zeros_like(covariance.intrinsic)
+    )
+    matrix, inflation = empty.widened_intrinsic()
+    assert inflation == 1.0
+    assert np.allclose(matrix, 0.0)
+
+
+def test_the_leave_one_out_step_matches_actually_refitting_without_the_view(good_capture):
+    """The identity that makes the leverage correction affordable.
+
+    `(S - S_i)^-1 s_i` is the exact leave-one-out displacement for a linear
+    model. If it tracks a real refit with the view removed, the correction costs
+    a `p x p` solve per view instead of `G` full calibrations, which is the
+    difference between doing it and shipping the caveat instead.
+    """
+    from calibsense.refit import RefitOptions, instrument
+
+    observations = good_capture.observations
+    fit = instrument(CalibrationSession(observations=observations), RefitOptions())
+    information = fit.equations.schur_contributions()
+    scores = fit.equations.view_scores()
+    total = information.sum(axis=0)
+    predicted = np.array([
+        np.linalg.solve(total - information[i], scores[i])
+        for i in range(observations.n_views)
+    ])
+
+    actual = []
+    for index in range(observations.n_views):
+        kept = tuple(v for j, v in enumerate(observations.views) if j != index)
+        reduced = ObservationSet(observations.target, observations.image_size, kept)
+        without = instrument(CalibrationSession(observations=reduced), RefitOptions())
+        actual.append(without.camera.to_vector() - fit.camera.to_vector())
+    actual = np.array(actual)
+
+    for column, name in enumerate(fit.covariance.intrinsic_names):
+        a, b = predicted[:, column], actual[:, column]
+        assert np.corrcoef(a, b)[0, 1] > 0.99, name
+        assert 0.9 < a.std(ddof=1) / b.std(ddof=1) < 1.15, name
+
+
+def test_the_leverage_correction_is_what_lifts_the_estimate_off_the_floor(good_capture):
+    """Without it this is the plain sandwich, which shrinks at a fitted optimum.
+
+    Residuals evaluated where the fit put them are smaller than the errors that
+    produced them, so scores built from those residuals understate the spread.
+    The correction undoes part of that, and it must only ever push outwards.
+    """
+    from calibsense.refit.covariance import leave_one_out_steps
+
+    camera, poses, _, _ = opencv_calibrate(good_capture.observations)
+    equations, covariance = covariance_at(camera, poses, good_capture.observations)
+    scores = equations.view_scores()
+    information = equations.schur_contributions()
+    schur_inverse = covariance.spectrum.inverse
+
+    corrected = leave_one_out_steps(information, scores, schur_inverse)
+    uncorrected = scores @ schur_inverse
+    # Same directions, longer steps: the correction scales each view's
+    # displacement up by its own leverage and never down.
+    lengths = np.linalg.norm(corrected, axis=1) / np.linalg.norm(uncorrected, axis=1)
+    assert lengths.min() > 1.0
+    assert lengths.max() < 5.0
+
+
+def test_a_view_that_alone_determines_a_direction_cannot_blow_the_correction_up():
+    """Leverage one would be an infinite correction; the clamp bounds it."""
+    from calibsense.refit.covariance import MAX_VIEW_LEVERAGE, leave_one_out_steps
+
+    # Two views, the second contributing almost nothing, so the first carries
+    # essentially all the leverage in every direction.
+    information = np.array([np.eye(2) * 1.0, np.eye(2) * 1e-9])
+    scores = np.array([[1.0, 1.0], [-1.0, -1.0]])
+    steps = leave_one_out_steps(information, scores, np.linalg.pinv(information.sum(axis=0)))
+    assert np.all(np.isfinite(steps))
+    assert np.abs(steps).max() <= (1.0 - MAX_VIEW_LEVERAGE) ** -0.5 * 2.0
