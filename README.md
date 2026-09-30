@@ -108,7 +108,8 @@ without parsing anything.
 
 ```sh
 calibsense report session.npz --task length:800mm:100mm --task plane:800mm \
-    --json audit.json --pdf audit.pdf --contact metrology@example.com
+    --json audit.json --pdf audit.pdf --html audit.html \
+    --contact metrology@example.com
 ```
 
 ```
@@ -131,6 +132,19 @@ can sign. Both lead with the variance split, the line most people act on:
 calibration error and measurement-time pixel noise are independent, so their
 variances add, and splitting them says re-calibrating this camera can improve
 the answer by at most 40%. The rest is photons.
+
+For whoever has to act on the result without a terminal, add `--html
+audit.html`. It writes one self-contained page that opens in any browser, with
+nothing fetched from the network. It opens with a plain verdict ("Usable, with
+warnings", "Do not sign off on these figures yet"), then shows the error for
+each task, what each finding means and what to do about it, and a box where the
+reader types the tolerance their acceptance test allows and is told whether the
+95% interval fits inside it. A figure that is only a lower bound is reported as
+"cannot be checked" rather than as a pass. The same page opens any other
+`audit.json` dropped onto it, so one copy is enough to read every report the
+engineers send, and "Print or save as PDF" gives a printed copy with the
+technical details expanded. The page renders the JSON as written and recomputes
+nothing, so it cannot disagree with it.
 
 Four tasks are available as `--task`: `length:DEPTH:SIZE` for measuring a
 feature, `plane:DEPTH[:TILT]` for locating a plane, `stereo:DEPTH:BASELINE` for

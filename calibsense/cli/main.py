@@ -51,7 +51,14 @@ from ..io import (
 )
 from ..noisefloor import MIN_PRESENCE, measure_noise_floor
 from ..refit import RefitOptions, instrument, set_single_threaded
-from ..report import ReportMetadata, render_text, run_audit, write_json, write_pdf
+from ..report import (
+    ReportMetadata,
+    render_text,
+    run_audit,
+    write_html,
+    write_json,
+    write_pdf,
+)
 from ..validate import cross_validate
 from . import render
 from .targets import SHORTHAND_HELP, resolve_target
@@ -281,12 +288,15 @@ def build_parser() -> argparse.ArgumentParser:
     report = subparsers.add_parser(
         "report",
         help="one run: refit, cross-validate, diagnose, propagate to millimetres, "
-             "and write a JSON and a PDF",
+             "and write a JSON, a PDF and a page to open in a browser",
     )
     report.add_argument("session", metavar="SESSION", help="session bundle")
     report.add_argument("--pdf", metavar="FILE", help="write the PDF here")
     report.add_argument("--json", dest="json_path", metavar="FILE",
                         help="write the machine-readable JSON here")
+    report.add_argument("--html", dest="html_path", metavar="FILE",
+                        help="write a self-contained page that opens in any "
+                             "browser, for a reader who never uses a terminal")
     report.add_argument("--task", action="append", default=[], metavar="SPEC",
                         help="measurement to propagate; repeatable. "
                              f"{TASK_SHORTHAND_HELP}")
@@ -575,6 +585,8 @@ def _report(args: argparse.Namespace) -> int:
         written.append(write_pdf(audit, args.pdf))
     if args.json_path:
         written.append(write_json(audit, args.json_path))
+    if args.html_path:
+        written.append(write_html(audit, args.html_path))
     if args.calibration_out:
         written.append(
             export_calibration(
@@ -586,7 +598,7 @@ def _report(args: argparse.Namespace) -> int:
         print(f"wrote {path}")
     if not written:
         print(
-            "\nnothing written; pass --pdf, --json and/or --calibration-out "
+            "\nnothing written; pass --pdf, --json, --html and/or --calibration-out "
             "to save the report",
             file=sys.stderr,
         )

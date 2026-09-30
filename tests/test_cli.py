@@ -413,8 +413,10 @@ def test_diagnose_on_a_missing_session_is_a_clean_input_error(tmp_path, capsys):
 def test_report_writes_both_outputs(tmp_path, session_file, capsys):
     pdf = tmp_path / "report.pdf"
     js = tmp_path / "report.json"
+    page = tmp_path / "report.html"
     code = main([
         "report", str(session_file), "--pdf", str(pdf), "--json", str(js),
+        "--html", str(page),
         "--task", "length:800mm:100mm", "--samples", "300",
         "--camera-name", "line-3", "--contact", "me@example.com",
     ])
@@ -427,6 +429,8 @@ def test_report_writes_both_outputs(tmp_path, session_file, capsys):
     assert payload["metadata"]["camera_name"] == "line-3"
     assert payload["metadata"]["contact"] == "me@example.com"
     assert payload["tasks"][0]["task"]["depth_mm"] == 800.0
+    assert page.read_text(encoding="utf-8").startswith("<!doctype html>")
+    assert f"wrote {page}" in out
 
 
 @pytest.mark.slow

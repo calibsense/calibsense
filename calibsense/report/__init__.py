@@ -11,9 +11,10 @@
 
 """M7 — the report.
 
-Two outputs from one run. `run_audit` produces the numbers; `write_json` emits
-every one of them for a machine, and `write_pdf` emits the subset a person has
-to sign, leading with the task-space statement and ending with an open question.
+Three outputs from one run. `run_audit` produces the numbers; `write_json` emits
+every one of them for a machine, `write_pdf` emits the subset a person has to
+sign, leading with the task-space statement and ending with an open question,
+and `write_html` emits a page a quality manager can open by double-clicking.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from .audit import (
     run_audit,
 )
 from .forecast import Forecast, Recommendation, forecast, recommend
+from .html import render_html, write_html
 from .pdf import A4, Document, text_width, wrap
 from .render import render_json, render_pdf, render_text, write_json, write_pdf
 
@@ -42,12 +44,14 @@ __all__ = [
     "default_tasks",
     "forecast",
     "recommend",
+    "render_html",
     "render_json",
     "render_pdf",
     "render_text",
     "run_audit",
     "text_width",
     "wrap",
+    "write_html",
     "write_json",
     "write_pdf",
 ]
